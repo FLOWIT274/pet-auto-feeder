@@ -33,6 +33,11 @@ wifi.pass
 *.old
 *.new
 
+# ---- Android 签名（构建时自动生成，见 android-app/build_apk.sh）----
+debug.keystore
+*.keystore
+*.jks
+
 # ---- 板端大文件（可重建，见 build.sh）----
 vision/bin/
 webd/target/
