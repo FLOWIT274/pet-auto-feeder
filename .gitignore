@@ -1,0 +1,42 @@
+# ---- 构建产物 ----
+target/
+build/
+dist/
+*.o
+*.a
+*.so
+__pycache__/
+*.pyc
+.cache/
+
+# ---- 本地配置（含真实 IP/路径，切勿提交）----
+config.env
+
+# ---- 凭证与本地环境（切勿提交真实值）----
+.env
+*.env
+!*.env.example
+!device/overlay/etc/*.env.example
+wifi.ssid
+wifi.pass
+/boot/wifi.ssid
+/boot/wifi.pass
+
+# ---- 编辑器/系统 ----
+.vscode/
+.idea/
+*.swp
+.DS_Store
+*~
+*.bak
+*.bak_*
+*.old
+*.new
+
+# ---- 板端大文件（可重建，见 build.sh）----
+vision/bin/
+webd/target/
+android-app/build/
+*.apk
+*.idsig
+super_stream.log

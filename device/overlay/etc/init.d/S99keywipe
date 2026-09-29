@@ -1,0 +1,44 @@
+#! /bin/sh
+# S99keywipe — 长按 User Key 5s 清空 wlan 配网信息（进 AP 配置模式）
+# 依赖 S30wifi（按键事件设备就绪后）；监听 /dev/input/event0 (gpio-keys)
+
+DAEMON=/usr/bin/key-wipe.py
+PIDFILE=/var/run/keywipe.pid
+
+start() {
+	if [ ! -x "$DAEMON" ]; then
+		echo "keywipe: $DAEMON 不存在，跳过"
+		return 1
+	fi
+	if [ ! -e /dev/input/event0 ]; then
+		echo "keywipe: /dev/input/event0 不存在，跳过"
+		return 1
+	fi
+	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+		echo "keywipe: 已在运行 (pid $(cat "$PIDFILE"))"
+		return 0
+	fi
+	"$DAEMON" >>/var/log/keywipe.log 2>&1 &
+	echo $! >"$PIDFILE"
+	echo "keywipe: 启动 (pid $!)"
+}
+
+stop() {
+	# 1) pidfile 精确 kill（busybox pkill -f 对 python 脚本不可靠，不用）
+	if [ -f "$PIDFILE" ]; then
+		kill "$(cat "$PIDFILE")" 2>/dev/null || kill -9 "$(cat "$PIDFILE")" 2>/dev/null
+		rm -f "$PIDFILE"
+	fi
+	# 2) ps 扫描兜底（防 pidfile 丢失的孤儿实例）
+	for p in $(ps -ef | grep "[k]ey-wipe.py" | awk "{print \$1}"); do
+		kill -9 "$p" 2>/dev/null
+	done
+	echo "keywipe: 已停止"
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart) stop; sleep 0.3; start ;;
+	*) echo "用法: $0 start|stop|restart"; exit 1 ;;
+esac

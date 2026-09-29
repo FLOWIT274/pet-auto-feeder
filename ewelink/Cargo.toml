@@ -1,0 +1,26 @@
+[package]
+name = "ewelink-rs"
+version = "0.1.0"
+edition = "2021"
+description = "eWeLink (CoolKit) 开放平台 v2 API 的 Rust 客户端：登录、设备列表、插座开关控制、WebSocket 状态监听"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+futures-util = "0.3"
+hmac = "0.12"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time", "signal", "sync"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+openssl = { version = "0.10", features = ["vendored"] }
+tokio-native-tls = "0.3"
+native-tls = "0.2"
+mdns-sd = "0.12"
+aes = "0.8"
+md-5 = "0.10"
+cbc = { version = "0.1", features = ["alloc", "block-padding"] }
+cipher = "0.4"

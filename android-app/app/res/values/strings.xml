@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">喂食管理台</string>
+    <!-- 无感版：深色无标题栏；系统栏染成管理台背景色（#1a1e29），视觉无缝 -->
+    <style name="AppTheme" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">#FF1A1E29</item>
+        <item name="android:statusBarColor">#FF1A1E29</item>
+        <item name="android:navigationBarColor">#FF1A1E29</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+    </style>
+</resources>

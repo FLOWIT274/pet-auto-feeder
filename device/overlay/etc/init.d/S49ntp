@@ -1,0 +1,87 @@
+#!/bin/sh
+#
+# Starts Network Time Protocol daemon
+# 增强：等待默认路由/网络就绪后再启动 ntpd，避免开机时 DNS/网络未通
+# 导致长时间停留在 1970 年。若 120s 内网络仍不可用则跳过（AP 模式等场景）。
+#
+
+DAEMON="ntpd"
+PIDFILE="/var/run/$DAEMON.pid"
+WAITPID="/var/run/ntpd-wait.pid"
+
+NTPD_ARGS=" -g"
+
+# shellcheck source=/dev/null
+[ -r "/etc/default/$DAEMON" ] && . "/etc/default/$DAEMON"
+
+wait_network() {
+	i=0
+	while [ "$i" -lt 120 ]; do
+		if ip route show default 2>/dev/null | grep -q .; then
+			return 0
+		fi
+		sleep 1
+		i=$((i + 1))
+	done
+	return 1
+}
+
+start() {
+	printf 'Starting %s: ' "$DAEMON"
+	# 后台等待网络就绪，不阻塞后续服务启动
+	(
+		if wait_network; then
+			# 清理可能残留的旧 ntpd，确保用新网络重新解析 NTP 服务器
+			start-stop-daemon -K -q -p "$PIDFILE" 2>/dev/null || true
+			rm -f "$PIDFILE"
+			start-stop-daemon -S -q -p "$PIDFILE" -x "/usr/sbin/$DAEMON" \
+				-- $NTPD_ARGS -p "$PIDFILE"
+			status=$?
+			if [ "$status" -eq 0 ]; then
+				echo "OK"
+			else
+				echo "FAIL"
+			fi
+		else
+			echo "no default route, skip ntpd"
+		fi
+		rm -f "$WAITPID"
+	) &
+	echo $! > "$WAITPID"
+	echo "waiting for network (pid $!)"
+}
+
+stop() {
+	printf 'Stopping %s: ' "$DAEMON"
+	if [ -f "$WAITPID" ]; then
+		wait_pid=$(cat "$WAITPID" 2>/dev/null)
+		[ -n "$wait_pid" ] && kill "$wait_pid" 2>/dev/null
+		rm -f "$WAITPID"
+	fi
+	start-stop-daemon -K -q -p "$PIDFILE"
+	status=$?
+	if [ "$status" -eq 0 ]; then
+		rm -f "$PIDFILE"
+		echo "OK"
+	else
+		echo "FAIL"
+	fi
+	return "$status"
+}
+
+restart() {
+	stop
+	sleep 1
+	start
+}
+
+case "$1" in
+	start|stop|restart)
+		"$1";;
+	reload)
+		# Restart, since there is no true "reload" feature.
+		restart;;
+	*)
+		echo "Usage: $0 {start|stop|restart|reload}"
+		exit 1
+esac

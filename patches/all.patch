@@ -1,0 +1,1287 @@
+diff --git a/build/boards/sg200x/sg2002_licheervnano_sd/dts_riscv/sg2002_licheervnano_sd.dts b/build/boards/sg200x/sg2002_licheervnano_sd/dts_riscv/sg2002_licheervnano_sd.dts
+index 411a81587..6423b78b6 100644
+--- a/build/boards/sg200x/sg2002_licheervnano_sd/dts_riscv/sg2002_licheervnano_sd.dts
++++ b/build/boards/sg200x/sg2002_licheervnano_sd/dts_riscv/sg2002_licheervnano_sd.dts
+@@ -183,6 +183,9 @@
+ 
+ &mipi_rx {
+         snsr-reset = <&porte 1 GPIO_ACTIVE_LOW>;
++        /* MIPIRX0N = XGPIOC_10: cam1 power-en. Kept hi-z (input) so an
++         * external 3.3V supply can drive the pin for OV5647 bring-up. */
++        power-en-gpio = <&portc 10 GPIO_ACTIVE_HIGH>;
+ };
+ 
+ / {
+diff --git a/build/boards/sg200x/sg2002_licheervnano_sd/u-boot/cvi_board_init.c b/build/boards/sg200x/sg2002_licheervnano_sd/u-boot/cvi_board_init.c
+index bfd3ba9b7..7869b123b 100644
+--- a/build/boards/sg200x/sg2002_licheervnano_sd/u-boot/cvi_board_init.c
++++ b/build/boards/sg200x/sg2002_licheervnano_sd/u-boot/cvi_board_init.c
+@@ -124,9 +124,18 @@ int cvi_board_init(void)
+ 	//mmio_write_32(0x030010ac, 0x4); // PWRGPIO 2 PWM 10
+ 	mmio_write_32(0x030010ac, 0x0); // PWRGPIO 2 GPIO_MODE
+ 
++        // PWR_GPIO1 (cam0 power-en / snsr-reset): pin it to plain GPIO.
++        // DW-APB GPIO direction resets to input (hi-z), so FUNCSEL=0 alone
++        // guarantees hi-z even if the reset default FUNCSEL were an output
++        // func (EPHY_LNK_LED/PWM). External 3.3V bring-up feeds this pad.
++        mmio_write_32(0x030010A8, 0x0); // PWR_GPIO1 GPIO_MODE, hi-z input
++
+         // camera function
+         //mmio_write_32(0x0300116C, 0x5); // RX4N CAM_MCLK0 for alpha
+-        mmio_write_32(0x0300118C, 0x5); // RX0N CAM_MCLK1 for beta
++        // MIPIRX0N must NOT drive CAM_MCLK1: licheervnano bring-up feeds an
++        // external 3.3V into this pad (OV5647 power). Output clock here would
++        // short the rail and kill SD/board. Keep it XGPIOC_10, hi-z by default.
++        mmio_write_32(0x0300118C, 0x3); // RX0N XGPIOC_10 (hi-z input, no MCLK)
+ 
+ 	// spi1 on mipi csi 
+ 	/*
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S25wifimod b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S25wifimod
+index b287dd4a0..ecc164906 100755
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S25wifimod
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S25wifimod
+@@ -7,7 +7,7 @@ then
+ 	cd /mnt/system/ko/
+ 	insmod cfg80211.ko
+ 	insmod 3rd/aic8800_bsp.ko
+-	insmod 3rd/aic8800_fdrv.ko
++	insmod 3rd/aic8800_fdrv.ko aicwf_dbg_level=1
+ 	insmod 3rd/8733bs.ko
+ 	echo "OK"
+ 	exit 0
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S30wifi b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S30wifi
+index 9c4df0f22..55314b593 100755
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S30wifi
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S30wifi
+@@ -1,6 +1,7 @@
+ #!/bin/sh
+ 
+ . /etc/profile
++. /etc/wifi_fallback.sh
+ 
+ gen_hostapd_conf() {
+ 	ssid="${1}"
+@@ -36,113 +37,147 @@ gen_udhcpd_conf() {
+         echo "option lease 864000"
+ }
+ 
+-start() {
+-	if [ -e /boot/wifi.sta ]
++start_ap() {
++	echo "wifi mode: ap"
++	if [ -e /boot/hostapd.conf ]
+ 	then
+-		echo "wifi mode: sta"
+-		if [ -e /boot/wpa_supplicant.conf ]
++		cp /boot/hostapd.conf /etc/hostapd.conf
++	else
++		id2=$(printf "%d" 0x$(sha512sum /device_key_legacy | head -c 2))
++		id3=$(printf "%d" 0x$(sha512sum /device_key_legacy | head -c 4 | tail -c 2))
++		if [ "$id2" = "$id3" ]
+ 		then
+-			cp /boot/wpa_supplicant.conf /etc/wpa_supplicant.conf
+-		else
+-			ssid=""
+-			pass=""
+-			if [ -e /boot/wifi.ssid ]
+-			then
+-				echo -n "ssid: "
+-				cat /boot/wifi.ssid
+-				ssid=`cat /boot/wifi.ssid`
+-			fi
+-			if [ -e /boot/wifi.pass ]
+-			then
+-				echo -n "wifi.pass: "
+-				cat /boot/wifi.pass
+-				pass=`cat /boot/wifi.pass`
+-			fi
+-			if [ ! -z "${ssid}${pass}" ]
+-			then
+-				echo "ctrl_interface=/var/run/wpa_supplicant" > /etc/wpa_supplicant.conf
+-				wpa_passphrase "$ssid" "$pass" >> /etc/wpa_supplicant.conf
+-			fi
++			id2=$((id2 + 1))
++		fi
++		if [ "$id2" -ge 255 ]
++		then
++			id2=253
+ 		fi
+-		wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf
+-		if [ ! -e /boot/wifi.nodhcp ]
++		if [ "$id3" -ge 255 ]
+ 		then
+-			(udhcpc -i wlan0 -t 10 -T 1 -A 5 -b -p /run/udhcpc.wlan0.pid) &
++			id3=254
+ 		fi
+-	elif [ -e /boot/wifi.ap ]
++		ssid="licheervnano-${id2}${id3}"
++		pass="00000000"
++		if [ -e /boot/wifi.ssid ]
++		then
++			echo -n "ssid: "
++			cat /boot/wifi.ssid
++			ssid=`cat /boot/wifi.ssid`
++		fi
++		# AP 密码固定 00000000，不从 wifi.pass 读取（wifi.pass 是 STA 连接凭证，非 AP 接入密钥）
++		gen_hostapd_conf "$ssid" "$pass" > /etc/hostapd.conf
++	fi
++	if [ -e /boot/wifi.ipv4_prefix ]
+ 	then
+-		echo "wifi mode: ap"
+-		if [ -e /boot/hostapd.conf ]
++		ipv4_prefix=`cat /boot/wifi.ipv4_prefix`
++	else
++		ipv4_prefix=10.$id3.$id2
++	fi
++	if [ ! -e /etc/udhcpd.wlan0.conf ]
++	then
++		gen_udhcpd_conf wlan0 "${ipv4_prefix}"  > /etc/udhcpd.wlan0.conf
++	fi
++	ifconfig wlan0 up
++	ip route del default || true
++	# routes=$(ip route show | grep 'dev wlan0' | awk '{print $1}')
++	# for route in $routes; do
++	# 	ip route del $route dev wlan0
++	# 	echo "Deleted route $route dev wlan0"
++	# done
++	ip add flush dev wlan0
++	ip addr add $ipv4_prefix.1/24 dev wlan0
++	hostapd -B -i wlan0 /etc/hostapd.conf
++	udhcpd -S /etc/udhcpd.wlan0.conf
++	# 配置窗口期：启动 WiFi 配置服务（80 端口）
++	if [ -e /mnt/system/usr/bin/wificfgd ]
++	then
++		/mnt/system/usr/bin/wificfgd &
++	fi
++}
++
++start_sta() {
++	echo "wifi mode: sta"
++	mkdir -p /var/run/wpa_supplicant
++	if [ -e /boot/wpa_supplicant.conf ]
++	then
++		cp /boot/wpa_supplicant.conf /etc/wpa_supplicant.conf
++	else
++		ssid=""
++		pass=""
++		if [ -e /boot/wifi.ssid ]
+ 		then
+-			cp /boot/hostapd.conf /etc/hostapd.conf
+-		else
+-			id2=$(printf "%d" 0x$(sha512sum /device_key_legacy | head -c 2))
+-			id3=$(printf "%d" 0x$(sha512sum /device_key_legacy | head -c 4 | tail -c 2))
+-			if [ "$id2" = "$id3" ]
+-			then
+-				id2=$((id2 + 1))
+-			fi
+-			if [ "$id2" -ge 255 ]
+-			then
+-				id2=253
+-			fi
+-			if [ "$id3" -ge 255 ]
+-			then
+-				id3=254
+-			fi
+-			ssid="licheervnano-${id2}${id3}"
+-			pass="licheervnano"
+-			if [ -e /boot/wifi.ssid ]
+-			then
+-				echo -n "ssid: "
+-				cat /boot/wifi.ssid
+-				ssid=`cat /boot/wifi.ssid`
+-			fi
+-			if [ -e /boot/wifi.pass ]
+-			then
+-				echo -n "wifi.pass: "
+-				cat /boot/wifi.pass
+-				pass=`cat /boot/wifi.pass`
+-			fi
+-			gen_hostapd_conf "$ssid" "$pass" > /etc/hostapd.conf
++			echo -n "ssid: "
++			cat /boot/wifi.ssid
++			ssid=`cat /boot/wifi.ssid`
+ 		fi
+-		if [ -e /boot/wifi.ipv4_prefix ]
++		if [ -e /boot/wifi.pass ]
+ 		then
+-			ipv4_prefix=`cat /boot/wifi.ipv4_prefix`
+-		else
+-			ipv4_prefix=10.$id3.$id2
++			echo -n "wifi.pass: "
++			cat /boot/wifi.pass
++			pass=`cat /boot/wifi.pass`
+ 		fi
+-		if [ ! -e /etc/udhcpd.wlan0.conf ]
++		if [ ! -z "${ssid}${pass}" ]
+ 		then
+-			gen_udhcpd_conf wlan0 "${ipv4_prefix}"  > /etc/udhcpd.wlan0.conf
++			echo "ctrl_interface=/var/run/wpa_supplicant" > /etc/wpa_supplicant.conf
++			wpa_passphrase "$ssid" "$pass" >> /etc/wpa_supplicant.conf
++		else
++			# 无凭证：清残留配置，避免复用旧网络（如已删除的 SSID）误连
++			rm -f /etc/wpa_supplicant.conf
++			echo "wifi: no credentials, skipping STA"
++			return 0
+ 		fi
+-		ifconfig wlan0 up
+-		ip route del default || true
+-		# routes=$(ip route show | grep 'dev wlan0' | awk '{print $1}')
+-		# for route in $routes; do
+-		# 	ip route del $route dev wlan0
+-		# 	echo "Deleted route $route dev wlan0"
+-		# done
+-		ip add flush dev wlan0
+-		ip addr add $ipv4_prefix.1/24 dev wlan0
+-		hostapd -B -i wlan0 /etc/hostapd.conf
+-		udhcpd -S /etc/udhcpd.wlan0.conf
++	fi
++	wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf
++	if [ ! -e /boot/wifi.nodhcp ]
++	then
++		(udhcpc -i wlan0 -t 10 -T 1 -A 5 -b -p /run/udhcpc.wlan0.pid) &
++	fi
++}
++
++start() {
++	if [ -e /boot/wifi.ap ]
++	then
++		start_ap
+ 	elif [ -e /boot/wifi.mon ]
+ 	then
+ 		echo "wifi mode: mon"
+ 		airmon-ng start wlan0
++	else
++		# 默认（无标记或 wifi.sta）：无凭证直接进配置窗口期（首次配置）；
++		# 有凭证先试 STA，扫描窗口内无可用网络则回退 AP
++		if [ ! -e /boot/wifi.ssid ] && [ ! -e /boot/wifi.pass ]
++		then
++			echo "wifi: no credentials, switching to AP"
++			start_ap
++		else
++			start_sta
++			if ! should_fallback
++			then
++				echo "wifi fallback: no network found, switching to AP"
++				stop_wifi_sta
++				start_ap
++			else
++				echo "wifi: network found, staying in STA mode"
++			fi
++		fi
+ 	fi
+ }
+ 
+-stop() {
+-	ps -ef|grep hostapd|grep -v grep|awk '{print $1}'|xargs kill -2 || true
+-	ps -ef|grep "udhcpd -S /etc/udhcpd.wlan0.conf" |grep -v grep|awk '{print $1}'|xargs kill -2 || true
++stop_wifi_sta() {
+ 	killall wpa_supplicant || true
+ 	if [ -e /run/udhcpc.wlan0.pid ]
+ 	then
+ 		kill `cat /run/udhcpc.wlan0.pid` || true
+ 		rm -f /run/udhcpc.wlan0.pid
+ 	fi
++}
++
++stop() {
++	ps -ef|grep hostapd|grep -v grep|awk '{print $1}'|xargs kill -2 || true
++	ps -ef|grep "udhcpd -S /etc/udhcpd.wlan0.conf" |grep -v grep|awk '{print $1}'|xargs kill -2 || true
++	stop_wifi_sta
++	killall wificfgd || true
+ 	if [ -e /var/run/udhcpd.wlan0.pid ]
+ 	then
+ 		kill `cat /var/run/udhcpd.wlan0.pid`  || true
+diff --git a/middleware/v2/component/isp/sensor/cv182x/ov_ov5647/ov5647_cmos.c b/middleware/v2/component/isp/sensor/cv182x/ov_ov5647/ov5647_cmos.c
+index b7cc52d2b..c16a5b386 100644
+--- a/middleware/v2/component/isp/sensor/cv182x/ov_ov5647/ov5647_cmos.c
++++ b/middleware/v2/component/isp/sensor/cv182x/ov_ov5647/ov5647_cmos.c
+@@ -72,6 +72,7 @@ static CVI_S32 cmos_get_wdr_size(VI_PIPE ViPipe, ISP_SNS_ISP_INFO_S *pstIspCfg);
+ #define OV5647_VTS_ADDR		0x380E
+ 
+ #define OV5647_RES_IS_1080P(w, h)      ((w) == 1920 && (h) == 1080)
++#define OV5647_RES_IS_1296X972(w, h)   ((w) == 1296 && (h) == 972)
+ 
+ static CVI_S32 cmos_get_ae_default(VI_PIPE ViPipe, AE_SENSOR_DEFAULT_S *pstAeSnsDft)
+ {
+@@ -167,6 +168,7 @@ static CVI_S32 cmos_fps_set(VI_PIPE ViPipe, CVI_FLOAT f32Fps, AE_SENSOR_DEFAULT_
+ 
+ 	switch (pstSnsState->u8ImgMode) {
+ 	case OV5647_MODE_1920X1080P30:
++	case OV5647_MODE_1296X972P25:
+ 		if ((f32Fps <= f32MaxFps) && (f32Fps >= f32MinFps)) {
+ 			u32VMAX = u32Vts * f32MaxFps / DIV_0_TO_1_FLOAT(f32Fps);
+ 		} else {
+@@ -472,7 +474,10 @@ static CVI_S32 cmos_set_wdr_mode(VI_PIPE ViPipe, CVI_U8 u8Mode)
+ 
+ 	switch (u8Mode) {
+ 	case WDR_MODE_NONE:
+-		pstSnsState->u8ImgMode = OV5647_MODE_1920X1080P30;
++		/* 实验 B(临时):set_wdr_mode 不再强制回 1080P30;若当前为 1296 模式则保留。
++		 * (global_init 已设默认,此分支只兜底 1080p 情形) */
++		if (pstSnsState->u8ImgMode != OV5647_MODE_1296X972P25)
++			pstSnsState->u8ImgMode = OV5647_MODE_1920X1080P30;
+ 		pstSnsState->enWDRMode = WDR_MODE_NONE;
+ 		pstSnsState->u32FLStd = g_astOv5647_mode[pstSnsState->u8ImgMode].u32VtsDef;
+ 		syslog(LOG_INFO, "linear mode\n");
+@@ -596,10 +601,15 @@ static CVI_S32 cmos_set_image_mode(VI_PIPE ViPipe, ISP_CMOS_SENSOR_IMAGE_MODE_S
+ 
+ 	u8SensorImageMode = pstSnsState->u8ImgMode;
+ 	pstSnsState->bSyncInit = CVI_FALSE;
++	printf("exp-B: set_image_mode(ctx=%p) req %dx%d@%f in_mode=%d\n",
++	       (void *)pstSnsState, pstSensorImageMode->u16Width, pstSensorImageMode->u16Height,
++	       pstSensorImageMode->f32Fps, u8SensorImageMode);
+ 	if (pstSensorImageMode->f32Fps <= 30) {
+ 		if (pstSnsState->enWDRMode == WDR_MODE_NONE) {
+ 			if (OV5647_RES_IS_1080P(pstSensorImageMode->u16Width, pstSensorImageMode->u16Height))
+ 				u8SensorImageMode = OV5647_MODE_1920X1080P30;
++			else if (OV5647_RES_IS_1296X972(pstSensorImageMode->u16Width, pstSensorImageMode->u16Height))
++				u8SensorImageMode = OV5647_MODE_1296X972P25;
+ 			else {
+ 				CVI_TRACE_SNS(CVI_DBG_ERR, "Not support! Width:%d, Height:%d, Fps:%f, WDRMode:%d\n",
+ 				       pstSensorImageMode->u16Width,
+@@ -646,8 +656,11 @@ static CVI_VOID sensor_global_init(VI_PIPE ViPipe)
+ 	OV5647_SENSOR_GET_CTX(ViPipe, pstSnsState);
+ 	CMOS_CHECK_POINTER_VOID(pstSnsState);
+ 
++	printf("exp-B: sensor_global_init u8ImgMode(in)=%d\n", pstSnsState->u8ImgMode);
+ 	pstSnsState->bInit = CVI_FALSE;
+ 	pstSnsState->bSyncInit = CVI_FALSE;
++	/* 恢复原默认(1920X1080P30):global_init 值影响 isp 库 wdr 缓存/配置流程,
++	 * 实验组(1296)需在 set_image_mode 层面切换。 */
+ 	pstSnsState->u8ImgMode = OV5647_MODE_1920X1080P30;
+ 	pstSnsState->enWDRMode = WDR_MODE_NONE;
+ 	pstSnsState->u32FLStd  = g_astOv5647_mode[pstSnsState->u8ImgMode].u32VtsDef;
+diff --git a/middleware/v2/component/isp/sensor/cv182x/ov_ov5647/ov5647_cmos_ex.h b/middleware/v2/component/isp/sensor/cv182x/ov_ov5647/ov5647_cmos_ex.h
+index 997695760..99b2b5860 100644
+--- a/middleware/v2/component/isp/sensor/cv182x/ov_ov5647/ov5647_cmos_ex.h
++++ b/middleware/v2/component/isp/sensor/cv182x/ov_ov5647/ov5647_cmos_ex.h
+@@ -32,6 +32,7 @@ enum ov5647_linear_regs_e {
+ 
+ typedef enum _OV5647_MODE_E {
+ 	OV5647_MODE_1920X1080P30 = 0,
++	OV5647_MODE_1296X972P25, /* RK3399 树莓派官方驱动 1296x972 binning 模式 */
+ 	OV5647_MODE_LINEAR_NUM,
+ 	OV5647_MODE_NUM
+ } OV5647_MODE_E;
+diff --git a/middleware/v2/component/isp/sensor/cv182x/ov_ov5647/ov5647_cmos_param.h b/middleware/v2/component/isp/sensor/cv182x/ov_ov5647/ov5647_cmos_param.h
+index 30aee31e7..150fd4a59 100644
+--- a/middleware/v2/component/isp/sensor/cv182x/ov_ov5647/ov5647_cmos_param.h
++++ b/middleware/v2/component/isp/sensor/cv182x/ov_ov5647/ov5647_cmos_param.h
+@@ -62,6 +62,49 @@ static const OV5647_MODE_S g_astOv5647_mode[OV5647_MODE_NUM] = {
+ 			.u32Step = 1,
+ 		},
+ 	},
++	[OV5647_MODE_1296X972P25] = {
++		.name = "1296x972p25",
++		.astImg[0] = {
++			.stSnsSize = {
++				.u32Width = 1296,
++				.u32Height = 972,
++			},
++			.stWndRect = {
++				.s32X = 0,
++				.s32Y = 0,
++				.u32Width = 1296,
++				.u32Height = 972,
++			},
++			.stMaxSize = {
++				.u32Width = 1296,
++				.u32Height = 972,
++			},
++		},
++
++		/* RK3399 ov5647.c(rpi-6.6.y backport) 1296x972 模式: HTS=0x0768=1896, VTS=0x058c=1420 */
++		.f32MaxFps = 25,
++		.f32MinFps = 5,
++		.u32HtsDef = 1896,
++		.u32VtsDef = 1420,
++		.stExp[0] = {
++			.u16Min = 4,
++			.u16Max = 1420 - 4,
++			.u16Def = 400,
++			.u16Step = 1,
++		},
++		.stAgain[0] = {
++			.u32Min = 1024,
++			.u32Max = 63448,
++			.u32Def = 1024,
++			.u32Step = 1,
++		},
++		.stDgain[0] = {
++			.u32Min = 1024,
++			.u32Max = 1024,
++			.u32Def = 1024,
++			.u32Step = 1,
++		},
++	},
+ };
+ 
+ static ISP_CMOS_BLACK_LEVEL_S g_stIspBlcCalibratio = {
+@@ -103,12 +146,13 @@ struct combo_dev_attr_s ov5647_rx_attr = {
+ 	.mac_clk = RX_MAC_CLK_400M,
+ 	.mipi_attr = {
+ 		.raw_data_type = RAW_DATA_10BIT,
+-		.lane_id = {0, 1, 2, -1, -1},
++		/* 树莓派 Camera V1 经转接板:D0=PHY4, D1=PHY3, CLK=PHY2(与直插模组不同) */
++		.lane_id = {2, 4, 3, -1, -1},
+ 		.pn_swap = {0, 0, 0, 0, 0},
+ 		.wdr_mode = CVI_MIPI_WDR_MODE_NONE,
+ 		.dphy = {
+ 			.enable = 1,
+-			.hs_settle = 8,
++			.hs_settle = 16,
+ 		},
+ 	},
+ 	.mclk = {
+diff --git a/middleware/v2/component/isp/sensor/cv182x/ov_ov5647/ov5647_sensor_ctl.c b/middleware/v2/component/isp/sensor/cv182x/ov_ov5647/ov5647_sensor_ctl.c
+index 8e2c2892d..b0001f4f3 100644
+--- a/middleware/v2/component/isp/sensor/cv182x/ov_ov5647/ov5647_sensor_ctl.c
++++ b/middleware/v2/component/isp/sensor/cv182x/ov_ov5647/ov5647_sensor_ctl.c
+@@ -18,6 +18,7 @@
+ #include "ov5647_cmos_ex.h"
+ 
+ static void ov5647_linear_1080p30_init(VI_PIPE ViPipe);
++static void ov5647_linear_1296x972_init(VI_PIPE ViPipe);
+ 
+ CVI_U8 ov5647_i2c_addr = 0x36;        /* I2C Address of OV5647 */
+ const CVI_U32 ov5647_addr_byte = 2;
+@@ -229,7 +230,13 @@ void ov5647_init(VI_PIPE ViPipe)
+ 
+ 	delay_ms(10);
+ 
+-	ov5647_linear_1080p30_init(ViPipe);
++	printf("exp-B: ov5647_init(ctx=%p) u8ImgMode=%d\n", (void *)g_pastOv5647[ViPipe], g_pastOv5647[ViPipe]->u8ImgMode);
++
++	if (g_pastOv5647[ViPipe]->u8ImgMode == OV5647_MODE_1296X972P25) {
++		ov5647_linear_1296x972_init(ViPipe);
++	} else {
++		ov5647_linear_1080p30_init(ViPipe);
++	}
+ 
+ 	g_pastOv5647[ViPipe]->bInit = CVI_TRUE;
+ }
+@@ -244,33 +251,40 @@ static void ov5647_linear_1080p30_init(VI_PIPE ViPipe)
+ {
+ 	ov5647_write_register(ViPipe, 0x0100, 0x00);
+ 	ov5647_write_register(ViPipe, 0x0103, 0x01);
+-	ov5647_write_register(ViPipe, 0x3035, 0x11);
+-	ov5647_write_register(ViPipe, 0x3036, 0x64);
++	/* PLL: 模块晶振 25MHz(SCTF25000),非 SoC MCLK 24MHz
++	 * 对齐树莓派官方 rpi-6.6.y ov5647.c 1080p30 序列:0x3035=0x21 + 0x3036=0x69 + 0x3037=0x11
++	 * (树莓派 Camera V1 同为 25MHz 晶振模组,官方验证组合;旧值 0x62 为本地猜测值) */
++	ov5647_write_register(ViPipe, 0x3035, 0x21);
++	ov5647_write_register(ViPipe, 0x3036, 0x69); /* 树莓派官方 1080p30 2-lane PLL */
++	ov5647_write_register(ViPipe, 0x3037, 0x11);
+ 	ov5647_write_register(ViPipe, 0x303c, 0x11);
+ 	ov5647_write_register(ViPipe, 0x3821, 0x00);
+ 	ov5647_write_register(ViPipe, 0x3820, 0x00);
+-	ov5647_write_register(ViPipe, 0x370c, 0x0f);
++	ov5647_write_register(ViPipe, 0x370c, 0x03);
+ 	ov5647_write_register(ViPipe, 0x3612, 0x5b);
+ 	ov5647_write_register(ViPipe, 0x3618, 0x04);
+ 	ov5647_write_register(ViPipe, 0x5000, 0x06);
+-	ov5647_write_register(ViPipe, 0x5002, 0x40);
++	ov5647_write_register(ViPipe, 0x5002, 0x41);
+ 	ov5647_write_register(ViPipe, 0x5003, 0x08);
+ 	ov5647_write_register(ViPipe, 0x5a00, 0x08);
+ 	ov5647_write_register(ViPipe, 0x3000, 0xff);
+ 	ov5647_write_register(ViPipe, 0x3001, 0xff);
+ 	ov5647_write_register(ViPipe, 0x3002, 0xff);
+ 	ov5647_write_register(ViPipe, 0x301d, 0xf0);
+-	ov5647_write_register(ViPipe, 0x3503, 0x07);
++	ov5647_write_register(ViPipe, 0x3503, 0x03);
+ 	ov5647_write_register(ViPipe, 0x3a18, 0x00);
+ 	ov5647_write_register(ViPipe, 0x3a19, 0xf8);
+ 	ov5647_write_register(ViPipe, 0x3c01, 0x80);
+ 	ov5647_write_register(ViPipe, 0x3b07, 0x0c);
+ 	ov5647_write_register(ViPipe, 0x380c, 0x09);
+ 	ov5647_write_register(ViPipe, 0x380d, 0x70);
+-	ov5647_write_register(ViPipe, 0x380e, 0x04);
+-	ov5647_write_register(ViPipe, 0x380f, 0x50);
++	ov5647_write_register(ViPipe, 0x380e, 0x04); /* vts 1125 = 30fps(树莓派官方) */
++	ov5647_write_register(ViPipe, 0x380f, 0x65);
+ 	ov5647_write_register(ViPipe, 0x3814, 0x11);
+ 	ov5647_write_register(ViPipe, 0x3815, 0x11);
++	/* 对齐树莓派官方 1080p30 序列补缺 */
++	ov5647_write_register(ViPipe, 0x3811, 0x04);
++	ov5647_write_register(ViPipe, 0x3813, 0x02);
+ 	ov5647_write_register(ViPipe, 0x3708, 0x64);
+ 	ov5647_write_register(ViPipe, 0x3709, 0x12);
+ 	ov5647_write_register(ViPipe, 0x3808, 0x07);
+@@ -319,6 +333,8 @@ static void ov5647_linear_1080p30_init(VI_PIPE ViPipe)
+ 	ov5647_write_register(ViPipe, 0x4000, 0x09);
+ 	ov5647_write_register(ViPipe, 0x4050, 0x6e);
+ 	ov5647_write_register(ViPipe, 0x4051, 0x8f);
++	/* 0x4837=0x19:DPHY HS-TX 时序(树莓派 1080p30 参考,本地缺失导致 lane 同步失败) */
++	ov5647_write_register(ViPipe, 0x4837, 0x19);
+ 	ov5647_write_register(ViPipe, 0x0100, 0x01);
+ 	ov5647_write_register(ViPipe, 0x3000, 0x00);
+ 	ov5647_write_register(ViPipe, 0x3001, 0x00);
+@@ -328,7 +344,10 @@ static void ov5647_linear_1080p30_init(VI_PIPE ViPipe)
+ 	ov5647_write_register(ViPipe, 0x3636, 0x06);
+ 	ov5647_write_register(ViPipe, 0x3016, 0x08);
+ 	ov5647_write_register(ViPipe, 0x3827, 0xec);
+-	ov5647_write_register(ViPipe, 0x3018, 0x44);
++	ov5647_write_register(ViPipe, 0x3018, 0x44); /* 2-lane D0+D1 */
++	/* 0x4800 (MIPI_CTRL00) 不写:树莓派 stream-on 写 0x00,duo SDK 不写;
++	 * 0x34=CLOCK_LANE_GATE|LINE_SYNC_ENABLE|BUS_IDLE(V851S 参考)导致
++	 * 总线空闲进入 idle,clock 通但数据 lane 解不出。 */
+ 	ov5647_write_register(ViPipe, 0x3035, 0x21);
+ 	ov5647_write_register(ViPipe, 0x3106, 0xf5);
+ 	ov5647_write_register(ViPipe, 0x3034, 0x1a);
+@@ -341,6 +360,121 @@ static void ov5647_linear_1080p30_init(VI_PIPE ViPipe)
+ 	printf("ViPipe:%d,===OV5647 1080P 30fps 10bit LINE Init OK!\n", ViPipe);
+ }
+ 
++/* 1296X972P25: RK3399 rpi-6.6.y ov5647.c backport 的 1296x972(binning)完整序列。
++ * 用于对照实验:该序列在 RK3399 平台验证能出图(CSIBDG 期望=1296)。
++ * 若此模式 CSIBDG 不报 GT,证明 1920 模式的 sensor 序列有问题;
++ * 若仍报 GT,证明 CSIBDG 行宽检查与模式无关(按字节数统计)。 */
++static void ov5647_linear_1296x972_init(VI_PIPE ViPipe)
++{
++	/* ---- RK ov5647_common_regs ---- */
++	ov5647_write_register(ViPipe, 0x0100, 0x00);
++	ov5647_write_register(ViPipe, 0x0103, 0x01);
++	ov5647_write_register(ViPipe, 0x370c, 0x03);
++	ov5647_write_register(ViPipe, 0x5000, 0x06);
++	ov5647_write_register(ViPipe, 0x5003, 0x08);
++	ov5647_write_register(ViPipe, 0x5a00, 0x08);
++	ov5647_write_register(ViPipe, 0x3000, 0x00);
++	ov5647_write_register(ViPipe, 0x3001, 0x00);
++	ov5647_write_register(ViPipe, 0x3002, 0x00);
++	ov5647_write_register(ViPipe, 0x301d, 0xf0);
++	ov5647_write_register(ViPipe, 0x3a18, 0x00);
++	ov5647_write_register(ViPipe, 0x3a19, 0xf8);
++	ov5647_write_register(ViPipe, 0x3c01, 0x80);
++	ov5647_write_register(ViPipe, 0x3b07, 0x0c);
++	ov5647_write_register(ViPipe, 0x3630, 0x2e);
++	ov5647_write_register(ViPipe, 0x3632, 0xe2);
++	ov5647_write_register(ViPipe, 0x3633, 0x23);
++	ov5647_write_register(ViPipe, 0x3634, 0x44);
++	ov5647_write_register(ViPipe, 0x3620, 0x64);
++	ov5647_write_register(ViPipe, 0x3621, 0xe0);
++	ov5647_write_register(ViPipe, 0x3600, 0x37);
++	ov5647_write_register(ViPipe, 0x3704, 0xa0);
++	ov5647_write_register(ViPipe, 0x3703, 0x5a);
++	ov5647_write_register(ViPipe, 0x3715, 0x78);
++	ov5647_write_register(ViPipe, 0x3717, 0x01);
++	ov5647_write_register(ViPipe, 0x3731, 0x02);
++	ov5647_write_register(ViPipe, 0x370b, 0x60);
++	ov5647_write_register(ViPipe, 0x3705, 0x1a);
++	ov5647_write_register(ViPipe, 0x3f05, 0x02);
++	ov5647_write_register(ViPipe, 0x3f06, 0x10);
++	ov5647_write_register(ViPipe, 0x3f01, 0x0a);
++	ov5647_write_register(ViPipe, 0x3a0f, 0x58);
++	ov5647_write_register(ViPipe, 0x3a10, 0x50);
++	ov5647_write_register(ViPipe, 0x3a1b, 0x58);
++	ov5647_write_register(ViPipe, 0x3a1e, 0x50);
++	ov5647_write_register(ViPipe, 0x3a11, 0x60);
++	ov5647_write_register(ViPipe, 0x3a1f, 0x28);
++	ov5647_write_register(ViPipe, 0x4001, 0x02);
++	ov5647_write_register(ViPipe, 0x4000, 0x09);
++	ov5647_write_register(ViPipe, 0x3503, 0x03);	/* manual,0xAE */
++	ov5647_write_register(ViPipe, 0x3500, 0x00);
++	ov5647_write_register(ViPipe, 0x3501, 0x6f);
++	ov5647_write_register(ViPipe, 0x3502, 0x00);
++	ov5647_write_register(ViPipe, 0x350a, 0x00);
++	ov5647_write_register(ViPipe, 0x350b, 0x6f);
++	ov5647_write_register(ViPipe, 0x5001, 0x01);	/* manual,0xAWB */
++	ov5647_write_register(ViPipe, 0x5180, 0x08);
++	ov5647_write_register(ViPipe, 0x5186, 0x04);
++	ov5647_write_register(ViPipe, 0x5187, 0x00);
++	ov5647_write_register(ViPipe, 0x5188, 0x04);
++	ov5647_write_register(ViPipe, 0x5189, 0x00);
++	ov5647_write_register(ViPipe, 0x518a, 0x04);
++	ov5647_write_register(ViPipe, 0x518b, 0x00);
++	ov5647_write_register(ViPipe, 0x5000, 0x00);	/* lenc WBC on */
++	ov5647_write_register(ViPipe, 0x3011, 0x62);
++	/* mipi */
++	ov5647_write_register(ViPipe, 0x3016, 0x08);
++	ov5647_write_register(ViPipe, 0x3017, 0xe0);
++	ov5647_write_register(ViPipe, 0x3018, 0x44);	/* 2-lane D0+D1 */
++	ov5647_write_register(ViPipe, 0x3034, 0x08);
++	ov5647_write_register(ViPipe, 0x3106, 0xf5);
++	/* ---- RK ov5647_1296x972 ---- */
++	ov5647_write_register(ViPipe, 0x3035, 0x21);	/* PLL */
++	ov5647_write_register(ViPipe, 0x3036, 0x64);	/* PLL: RK3399=0x60@24MHz MCLK → 25MHz 晶振换算(×25/24) */
++	ov5647_write_register(ViPipe, 0x3037, 0x11);	/* PLL root div: 复位默认 0x03 错误,须 0x11(同 1080p) */
++	ov5647_write_register(ViPipe, 0x303c, 0x11);	/* PLL */
++	ov5647_write_register(ViPipe, 0x3821, 0x07);	/* ISP mirror on, Sensor mirror on, H bin on */
++	ov5647_write_register(ViPipe, 0x3820, 0x41);	/* ISP flip off, Sensor flip off, V bin on */
++	ov5647_write_register(ViPipe, 0x3612, 0x59);	/* analog control */
++	ov5647_write_register(ViPipe, 0x3618, 0x00);	/* analog control */
++	ov5647_write_register(ViPipe, 0x380c, 0x07);	/* HTS = 1896 */
++	ov5647_write_register(ViPipe, 0x380d, 0x68);	/* HTS */
++	ov5647_write_register(ViPipe, 0x380e, 0x05);	/* VTS = 1420 */
++	ov5647_write_register(ViPipe, 0x380f, 0x8c);	/* VTS */
++	ov5647_write_register(ViPipe, 0x3814, 0x31);	/* X INC */
++	ov5647_write_register(ViPipe, 0x3815, 0x31);	/* X INC */
++	ov5647_write_register(ViPipe, 0x3708, 0x64);	/* analog control */
++	ov5647_write_register(ViPipe, 0x3709, 0x52);	/* analog control */
++	ov5647_write_register(ViPipe, 0x3808, 0x05);	/* DVPHO = 1296 */
++	ov5647_write_register(ViPipe, 0x3809, 0x10);	/* DVPHO */
++	ov5647_write_register(ViPipe, 0x380a, 0x03);	/* DVPVO = 972 */
++	ov5647_write_register(ViPipe, 0x380b, 0xcc);	/* DVPVO */
++	ov5647_write_register(ViPipe, 0x3800, 0x00);	/* X Start */
++	ov5647_write_register(ViPipe, 0x3801, 0x08);	/* X Start */
++	ov5647_write_register(ViPipe, 0x3802, 0x00);	/* Y Start */
++	ov5647_write_register(ViPipe, 0x3803, 0x02);	/* Y Start */
++	ov5647_write_register(ViPipe, 0x3804, 0x0a);	/* X End */
++	ov5647_write_register(ViPipe, 0x3805, 0x37);	/* X End */
++	ov5647_write_register(ViPipe, 0x3806, 0x07);	/* Y End */
++	ov5647_write_register(ViPipe, 0x3807, 0xa1);	/* Y End */
++	/* banding filter */
++	ov5647_write_register(ViPipe, 0x3a08, 0x01);	/* B50 */
++	ov5647_write_register(ViPipe, 0x3a09, 0x27);	/* B50 */
++	ov5647_write_register(ViPipe, 0x3a0a, 0x00);	/* B60 */
++	ov5647_write_register(ViPipe, 0x3a0b, 0xf6);	/* B60 */
++	ov5647_write_register(ViPipe, 0x3a0d, 0x04);	/* B60 max */
++	ov5647_write_register(ViPipe, 0x3a0e, 0x03);	/* B50 max */
++	ov5647_write_register(ViPipe, 0x4004, 0x02);	/* black line number */
++	ov5647_write_register(ViPipe, 0x4837, 0x24);	/* MIPI pclk period */
++	ov5647_write_register(ViPipe, 0x0100, 0x01);
++
++	ov5647_default_reg_init(ViPipe);
++
++	delay_ms(100);
++
++	printf("ViPipe:%d,===OV5647 1296x972 25fps 10bit LINE Init OK!\n", ViPipe);
++}
++
+ 
+ 
+ 
+diff --git a/middleware/v2/sample/common/sample_common_sensor.c b/middleware/v2/sample/common/sample_common_sensor.c
+index 4942fd9c2..87d8c5cc9 100644
+--- a/middleware/v2/sample/common/sample_common_sensor.c
++++ b/middleware/v2/sample/common/sample_common_sensor.c
+@@ -1159,6 +1159,19 @@ CVI_S32 SAMPLE_COMM_SNS_GetIspAttrBySns(SAMPLE_SNS_TYPE_E enSnsType, ISP_PUB_ATT
+ 		break;
+ 	};
+ 
++	/* 实验 B(临时):OV5647 模式选择开关。
++	 * 1920x1080@30 → 对照组(本地 1080p 基线);1296x972@25 → 实验组(RK3399 binning 序列)。 */
++	if (enSnsType == OV_OV5647_MIPI_2M_30FPS_10BIT) {
++		pstPubAttr->stSnsSize.u32Width  = 1920;
++		pstPubAttr->stSnsSize.u32Height = 1080;
++		pstPubAttr->stWndRect.u32Width  = 1920;
++		pstPubAttr->stWndRect.u32Height = 1080;
++		pstPubAttr->f32FrameRate = 30;
++		printf("exp-B: SNS_GetIspAttrBySns force OV5647 -> %dx%d@%dfps\n",
++		       pstPubAttr->stSnsSize.u32Width, pstPubAttr->stSnsSize.u32Height,
++		       (int)pstPubAttr->f32FrameRate);
++	}
++
+ 	return s32Ret;
+ }
+ 
+diff --git a/middleware/v2/sample/sample.mk b/middleware/v2/sample/sample.mk
+index 33ea2df55..f825be1b8 100644
+--- a/middleware/v2/sample/sample.mk
++++ b/middleware/v2/sample/sample.mk
+@@ -1,6 +1,6 @@
+ ################# select sensor type for your sample ###############################
+-SENSOR0_TYPE ?= SONY_IMX327_MIPI_2M_30FPS_12BIT
+-SENSOR1_TYPE ?= SONY_IMX327_MIPI_2M_30FPS_12BIT
++SENSOR0_TYPE ?= OV_OV5647_MIPI_2M_30FPS_10BIT
++SENSOR1_TYPE ?= OV_OV5647_MIPI_2M_30FPS_10BIT
+ 
+ SNS_LIB = -lsns_full
+ 
+diff --git a/middleware/v2/sample/vio/sample_vio.c b/middleware/v2/sample/vio/sample_vio.c
+index da79f52ed..09f5daac1 100644
+--- a/middleware/v2/sample/vio/sample_vio.c
++++ b/middleware/v2/sample/vio/sample_vio.c
+@@ -1828,10 +1828,14 @@ CVI_S32 SAMPLE_PR2100_TEST(void)
+ 		.enSource  = VI_PIPE_FRAME_SOURCE_DEV,
+ 		.devNum    = 1,
+ 		// .enSnsType = PIXELPLUS_PR2100_2M_2CH_25FPS_8BIT,
+-		.enSnsType[0] = PIXELPLUS_PR2100_2M_4CH_25FPS_8BIT,
++		.enSnsType[0] = OV_OV5647_MIPI_2M_30FPS_10BIT,
+ 		.enWDRMode[0] = WDR_MODE_NONE,
+-		.MipiDev[0]   = 0xff,
+-		.s32BusId[0]  = 0,
++		.MipiDev[0]   = 0,
++		.s32BusId[0]  = 4,
++		/* OV5647 2-lane MIPI(树莓派 Camera V1:D0/CLK/D1 三对);lane_id[0]=CLK=PHY2,
++		 * D0=PHY3, D1=PHY2(同 GC4653 物理映射,同一 22pin 座) */
++		.as16LaneId[0] = {2, 4, 3, -1, -1},
++		.as8PNSwap[0] = {0, 0, 0, 0, 0},
+ 	};
+ 
+ 	log_conf.enModId = CVI_ID_LOG;
+@@ -3121,6 +3125,251 @@ CVI_S32 SAMPLE_MCS369Q_TEST(void)
+ 	return s32Ret;
+ }
+ 
++CVI_S32 _ov5647_dump_sample(void)
++{
++	VIDEO_FRAME_INFO_S stVideoFrame;
++
++	if (CVI_VI_GetChnFrame(0, 0, &stVideoFrame, 1000) == 0) {
++		FILE *output;
++		CVI_U32 image_size = stVideoFrame.stVFrame.u32Length[0]
++				  + stVideoFrame.stVFrame.u32Length[1]
++				  + stVideoFrame.stVFrame.u32Length[2];
++		CVI_VOID *vir_addr;
++		CVI_U32 plane_offset;
++		char img_name[128] = {0, };
++
++		printf("width: %d, height: %d, total_buf_length: %d\n",
++				stVideoFrame.stVFrame.u32Width,
++				stVideoFrame.stVFrame.u32Height,
++				image_size);
++
++		snprintf(img_name, sizeof(img_name), "/mnt/data/sample_0.yuv");
++
++		output = fopen(img_name, "wb");
++		if (output == NULL) {
++			CVI_VI_ReleaseChnFrame(0, 0, &stVideoFrame);
++			printf("fopen fail\n");
++			return CVI_FAILURE;
++		}
++
++		vir_addr = CVI_SYS_Mmap(stVideoFrame.stVFrame.u64PhyAddr[0], image_size);
++		if (vir_addr == NULL) {
++			fclose(output);
++			CVI_VI_ReleaseChnFrame(0, 0, &stVideoFrame);
++			printf("mmap fail\n");
++			return CVI_FAILURE;
++		}
++		CVI_SYS_IonInvalidateCache(stVideoFrame.stVFrame.u64PhyAddr[0], vir_addr, image_size);
++		plane_offset = 0;
++		for (int i = 0; i < 3 && stVideoFrame.stVFrame.u32Length[i] > 0; i++) {
++			printf("plane(%d): paddr(0x%" PRIu64 ") stride(%d) length(%d)\n",
++				   i, stVideoFrame.stVFrame.u64PhyAddr[i],
++				   stVideoFrame.stVFrame.u32Stride[i],
++				   stVideoFrame.stVFrame.u32Length[i]);
++			fwrite(vir_addr + plane_offset, 1, stVideoFrame.stVFrame.u32Length[i], output);
++			plane_offset += stVideoFrame.stVFrame.u32Length[i];
++		}
++		CVI_SYS_Munmap(vir_addr, image_size);
++
++		if (CVI_VI_ReleaseChnFrame(0, 0, &stVideoFrame) != 0)
++			printf("CVI_VI_ReleaseChnFrame NG\n");
++
++		fclose(output);
++		return CVI_SUCCESS;
++	}
++
++	printf("CVI_VI_GetChnFrame NG\n");
++	return CVI_FAILURE;
++}
++
++CVI_S32 SAMPLE_OV5647_DUMP_TEST(void)
++{
++	SAMPLE_INI_CFG_S      stIniCfg;
++	WDR_MODE_E	   enWDRMode	    = WDR_MODE_NONE;
++	DYNAMIC_RANGE_E    enDynamicRange   = DYNAMIC_RANGE_SDR8;
++	PIXEL_FORMAT_E     enPixFormat	    = SAMPLE_PIXEL_FORMAT;
++	VIDEO_FORMAT_E     enVideoFormat    = VIDEO_FORMAT_LINEAR;
++	COMPRESS_MODE_E    enCompressMode   = COMPRESS_MODE_NONE;
++	VI_VPSS_MODE_E	   enMastPipeMode   = VI_OFFLINE_VPSS_OFFLINE;
++
++	VB_CONFIG_S        stVbConf;
++	PIC_SIZE_E         enPicSize;
++	CVI_U32	       u32BlkSize;
++	SIZE_S stSize;
++	CVI_S32 s32Ret = CVI_SUCCESS;
++
++	VI_DEV ViDev = 0;
++	VI_PIPE ViPipe = 0;
++	VI_CHN ViChn = 0;
++	CVI_S32 s32WorkSnsId = 0;
++	SAMPLE_VI_CONFIG_S stViConfig;
++	VI_PIPE_ATTR_S     stPipeAttr;
++	CVI_U32 frame_cnt = 1000, i;
++
++	/************************************************
++	 * step1:  Config VI
++	 ************************************************/
++	/* OV5647: i2c-4 @ 0x36, 2-lane MIPI, 1080p30(OV5647 仅支持 2-lane) */
++	stIniCfg = (SAMPLE_INI_CFG_S) {
++		.enSource  = VI_PIPE_FRAME_SOURCE_DEV,
++		.devNum    = 1,
++		.enSnsType[0] = OV_OV5647_MIPI_2M_30FPS_10BIT,
++		.enWDRMode[0] = WDR_MODE_NONE,
++		.MipiDev[0]   = 0,
++		.s32BusId[0]  = 4,
++		.s32SnsI2cAddr[0] = 0x36,
++		/* OV5647 树莓派模组经转接板:D0=PHY4, D1=PHY3, CLK=PHY2 */
++		.as16LaneId[0] = {2, 4, 3, -1, -1},
++		.as8PNSwap[0] = {0, 0, 0, 0, 0},
++	};
++
++	SAMPLE_COMM_VI_GetSensorInfo(&stViConfig);
++
++	stViConfig.astViInfo[s32WorkSnsId].stSnsInfo.enSnsType	     = stIniCfg.enSnsType[0];
++	stViConfig.s32WorkingViNum				     = 1;
++	stViConfig.as32WorkingViId[0]				     = 0;
++	stViConfig.astViInfo[s32WorkSnsId].stSnsInfo.MipiDev	     = stIniCfg.MipiDev[0];
++	stViConfig.astViInfo[s32WorkSnsId].stSnsInfo.s32BusId	     = stIniCfg.s32BusId[0];
++	stViConfig.astViInfo[s32WorkSnsId].stSnsInfo.s32SnsI2cAddr   = stIniCfg.s32SnsI2cAddr[0];
++	memcpy(stViConfig.astViInfo[s32WorkSnsId].stSnsInfo.as16LaneId,
++	       stIniCfg.as16LaneId[0], sizeof(CVI_S16) * 5);
++	memcpy(stViConfig.astViInfo[s32WorkSnsId].stSnsInfo.as8PNSwap,
++	       stIniCfg.as8PNSwap[0], sizeof(CVI_S8) * 5);
++	stViConfig.astViInfo[s32WorkSnsId].stDevInfo.ViDev	     = ViDev;
++	stViConfig.astViInfo[s32WorkSnsId].stDevInfo.enWDRMode	     = enWDRMode;
++	stViConfig.astViInfo[s32WorkSnsId].stPipeInfo.enMastPipeMode = enMastPipeMode;
++	stViConfig.astViInfo[s32WorkSnsId].stPipeInfo.aPipe[0]	     = ViPipe;
++	stViConfig.astViInfo[s32WorkSnsId].stPipeInfo.aPipe[1]	     = -1;
++	stViConfig.astViInfo[s32WorkSnsId].stPipeInfo.aPipe[2]	     = -1;
++	stViConfig.astViInfo[s32WorkSnsId].stPipeInfo.aPipe[3]	     = -1;
++	stViConfig.astViInfo[s32WorkSnsId].stChnInfo.ViChn	     = ViChn;
++	stViConfig.astViInfo[s32WorkSnsId].stChnInfo.enPixFormat     = enPixFormat;
++	stViConfig.astViInfo[s32WorkSnsId].stChnInfo.enDynamicRange  = enDynamicRange;
++	stViConfig.astViInfo[s32WorkSnsId].stChnInfo.enVideoFormat   = enVideoFormat;
++	stViConfig.astViInfo[s32WorkSnsId].stChnInfo.enCompressMode  = enCompressMode;
++
++	/************************************************
++	 * step2:  Get input size
++	 ************************************************/
++	s32Ret = SAMPLE_COMM_VI_GetSizeBySensor(stViConfig.astViInfo[s32WorkSnsId].stSnsInfo.enSnsType, &enPicSize);
++	if (s32Ret != CVI_SUCCESS) {
++		SAMPLE_PRT("SAMPLE_COMM_VI_GetSizeBySensor failed with %#x\n", s32Ret);
++		return s32Ret;
++	}
++
++	s32Ret = SAMPLE_COMM_SYS_GetPicSize(enPicSize, &stSize);
++	if (s32Ret != CVI_SUCCESS) {
++		SAMPLE_PRT("SAMPLE_COMM_SYS_GetPicSize failed with %#x\n", s32Ret);
++		return s32Ret;
++	}
++
++	/* 实验 B:OV5647 模式由 SNS_GetIspAttrBySns 决定(hack 在 sample_common_sensor.c),
++	 * 此处 pipe 尺寸必须跟随同一来源,否则 VI 无帧。 */
++	{
++		ISP_PUB_ATTR_S stExpPubAttr;
++		if (SAMPLE_COMM_SNS_GetIspAttrBySns(stViConfig.astViInfo[s32WorkSnsId].stSnsInfo.enSnsType,
++						    &stExpPubAttr) == CVI_SUCCESS) {
++			stSize.u32Width  = stExpPubAttr.stSnsSize.u32Width;
++			stSize.u32Height = stExpPubAttr.stSnsSize.u32Height;
++		}
++	}
++	SAMPLE_PRT("OV5647 experiment-B: pipe input size %dx%d\n", stSize.u32Width, stSize.u32Height);
++
++	/************************************************
++	 * step3:  Init SYS and common VB
++	 ************************************************/
++	memset(&stVbConf, 0, sizeof(VB_CONFIG_S));
++	stVbConf.u32MaxPoolCnt		= 1;
++
++	u32BlkSize = COMMON_GetPicBufferSize(stSize.u32Width, stSize.u32Height, SAMPLE_PIXEL_FORMAT, DATA_BITWIDTH_8
++					    , enCompressMode, DEFAULT_ALIGN);
++	stVbConf.astCommPool[0].u32BlkSize	= u32BlkSize;
++	stVbConf.astCommPool[0].u32BlkCnt	= 8;
++	SAMPLE_PRT("common pool[0] BlkSize %d\n", u32BlkSize);
++
++	s32Ret = SAMPLE_COMM_SYS_Init(&stVbConf);
++	if (s32Ret != CVI_SUCCESS) {
++		SAMPLE_PRT("system init failed with %#x\n", s32Ret);
++		return s32Ret;
++	}
++
++	/************************************************
++	 * step4:  Init VI ISP (inline flow, same as VoRotation - proven on OV5647)
++	 ************************************************/
++	s32Ret = SAMPLE_COMM_VI_StartSensor(&stViConfig);
++	if (s32Ret != CVI_SUCCESS) {
++		CVI_TRACE_LOG(CVI_DBG_ERR, "system start sensor failed with %#x\n", s32Ret);
++		return s32Ret;
++	}
++	s32Ret = SAMPLE_COMM_VI_StartDev(&stViConfig.astViInfo[ViDev]);
++	if (s32Ret != CVI_SUCCESS) {
++		CVI_TRACE_LOG(CVI_DBG_ERR, "VI_StartDev failed with %#x!\n", s32Ret);
++		return s32Ret;
++	}
++	s32Ret = SAMPLE_COMM_VI_StartMIPI(&stViConfig);
++	if (s32Ret != CVI_SUCCESS) {
++		CVI_TRACE_LOG(CVI_DBG_ERR, "system start MIPI failed with %#x\n", s32Ret);
++		return s32Ret;
++	}
++
++	stPipeAttr.bYuvSkip = CVI_FALSE;
++	stPipeAttr.u32MaxW = stSize.u32Width;
++	stPipeAttr.u32MaxH = stSize.u32Height;
++	stPipeAttr.enPixFmt = PIXEL_FORMAT_RGB_BAYER_10BPP;
++	stPipeAttr.enBitWidth = DATA_BITWIDTH_10;
++	stPipeAttr.stFrameRate.s32SrcFrameRate = -1;
++	stPipeAttr.stFrameRate.s32DstFrameRate = -1;
++	stPipeAttr.bNrEn = CVI_TRUE;
++	stPipeAttr.bYuvBypassPath = SAMPLE_COMM_VI_GetYuvBypassSts(stIniCfg.enSnsType[0]);
++	stPipeAttr.enCompressMode = enCompressMode;
++
++	s32Ret = CVI_VI_CreatePipe(ViPipe, &stPipeAttr);
++	if (s32Ret != CVI_SUCCESS) {
++		SAMPLE_PRT("CVI_VI_CreatePipe failed with %#x!\n", s32Ret);
++		return s32Ret;
++	}
++
++	s32Ret = CVI_VI_StartPipe(ViPipe);
++	if (s32Ret != CVI_SUCCESS) {
++		SAMPLE_PRT("CVI_VI_StartPipe failed with %#x!\n", s32Ret);
++		return s32Ret;
++	}
++
++	s32Ret = CVI_VI_GetPipeAttr(ViPipe, &stPipeAttr);
++	if (s32Ret != CVI_SUCCESS) {
++		SAMPLE_PRT("CVI_VI_StartPipe failed with %#x!\n", s32Ret);
++		return s32Ret;
++	}
++
++	s32Ret = SAMPLE_COMM_VI_CreateIsp(&stViConfig);
++	if (s32Ret != CVI_SUCCESS) {
++		CVI_TRACE_LOG(CVI_DBG_ERR, "VI_CreateIsp failed with %#x!\n", s32Ret);
++		return s32Ret;
++	}
++
++	SAMPLE_COMM_VI_StartViChn(&stViConfig);
++
++	sleep(1);
++
++	/************************************************
++	 * step5:  Dump N frames then exit (non-interactive)
++	 ************************************************/
++	for (i = 0; i < frame_cnt; i++) {
++		if (_ov5647_dump_sample() == CVI_SUCCESS)
++			SAMPLE_PRT("frame %u dumped\n", i);
++		else
++			SAMPLE_PRT("frame %u dump NG\n", i);
++	}
++
++	SAMPLE_COMM_VI_DestroyIsp(&stViConfig);
++
++	SAMPLE_COMM_VI_DestroyVi(&stViConfig);
++
++	SAMPLE_COMM_SYS_Exit();
++
++	return s32Ret;
++}
++
+ #ifdef ARCH_CV183X
+ CVI_S32 _mcs369_dump_sample(void)
+ {
+@@ -4149,6 +4398,7 @@ CVI_S32 SAMPLE_VI_VPSS_SLT(CVI_S32 frmNum, char *filename)
+ 
+ CVI_S32 SAMPLE_VIO_VoRotation(void)
+ {
++	SAMPLE_INI_CFG_S      stIniCfg;
+ 	SAMPLE_SNS_TYPE_E  enSnsType	    = SENSOR0_TYPE;
+ 	WDR_MODE_E	   enWDRMode	    = WDR_MODE_NONE;
+ 	DYNAMIC_RANGE_E    enDynamicRange   = DYNAMIC_RANGE_SDR8;
+@@ -4173,13 +4423,31 @@ CVI_S32 SAMPLE_VIO_VoRotation(void)
+ 	/************************************************
+ 	 * step1:  Config VI
+ 	 ************************************************/
++	/* OV5647: i2c-4 @ 0x36, 2-lane MIPI(物理 lane 4/3),1080p30 (default sample for LicheeRV Nano) */
++	stIniCfg = (SAMPLE_INI_CFG_S) {
++		.enSource  = VI_PIPE_FRAME_SOURCE_DEV,
++		.devNum    = 1,
++		.enSnsType[0] = OV_OV5647_MIPI_2M_30FPS_10BIT,
++		.enWDRMode[0] = WDR_MODE_NONE,
++		.MipiDev[0]   = 0,
++		.s32BusId[0]  = 4,
++		.s32SnsI2cAddr[0] = 0x36,
++		.as16LaneId[0] = {2, 4, 3, -1, -1},
++		.as8PNSwap[0] = {0, 0, 0, 0, 0},
++	};
++	enSnsType = stIniCfg.enSnsType[0];
+ 	SAMPLE_COMM_VI_GetSensorInfo(&stViConfig);
+ 
+-	stViConfig.astViInfo[s32WorkSnsId].stSnsInfo.enSnsType	     = enSnsType;
++	stViConfig.astViInfo[s32WorkSnsId].stSnsInfo.enSnsType	     = stIniCfg.enSnsType[0];
+ 	stViConfig.s32WorkingViNum				     = 1;
+ 	stViConfig.as32WorkingViId[0]				     = 0;
+-	stViConfig.astViInfo[s32WorkSnsId].stSnsInfo.MipiDev	     = 0xFF;
+-	stViConfig.astViInfo[s32WorkSnsId].stSnsInfo.s32BusId	     = 3;
++	stViConfig.astViInfo[s32WorkSnsId].stSnsInfo.MipiDev	     = stIniCfg.MipiDev[0];
++	stViConfig.astViInfo[s32WorkSnsId].stSnsInfo.s32BusId	     = stIniCfg.s32BusId[0];
++	stViConfig.astViInfo[s32WorkSnsId].stSnsInfo.s32SnsI2cAddr   = stIniCfg.s32SnsI2cAddr[0];
++	memcpy(stViConfig.astViInfo[s32WorkSnsId].stSnsInfo.as16LaneId,
++	       stIniCfg.as16LaneId[0], sizeof(CVI_S16) * 5);
++	memcpy(stViConfig.astViInfo[s32WorkSnsId].stSnsInfo.as8PNSwap,
++	       stIniCfg.as8PNSwap[0], sizeof(CVI_S8) * 5);
+ 	stViConfig.astViInfo[s32WorkSnsId].stDevInfo.ViDev	     = ViDev;
+ 	stViConfig.astViInfo[s32WorkSnsId].stDevInfo.enWDRMode	     = enWDRMode;
+ 	stViConfig.astViInfo[s32WorkSnsId].stPipeInfo.enMastPipeMode = enMastPipeMode;
+diff --git a/middleware/v2/sample/vio/sample_vio.h b/middleware/v2/sample/vio/sample_vio.h
+index 460be1700..0eb8205ee 100644
+--- a/middleware/v2/sample/vio/sample_vio.h
++++ b/middleware/v2/sample/vio/sample_vio.h
+@@ -22,6 +22,7 @@ CVI_S32 SAMPLE_PICO640_TEST(void);
+ CVI_S32 SAMPLE_MM308M2_TEST(void);
+ CVI_S32 SAMPLE_N5_TEST(void);
+ CVI_S32 SAMPLE_MCS369Q_TEST(void);
++CVI_S32 SAMPLE_OV5647_DUMP_TEST(void);
+ CVI_S32 SAMPLE_MCS369_TEST(void);
+ CVI_S32 SAMPLE_VIO_TWO_DEV_VO(void);
+ CVI_S32 SAMPLE_VI_VPSS_SLT(CVI_S32 frmNum, char *filename);
+diff --git a/middleware/v2/sample/vio/sample_vio_main.c b/middleware/v2/sample/vio/sample_vio_main.c
+index a240b10d0..3c8071cc3 100644
+--- a/middleware/v2/sample/vio/sample_vio_main.c
++++ b/middleware/v2/sample/vio/sample_vio_main.c
+@@ -41,6 +41,7 @@ void SAMPLE_VIO_Usage(char *sPrgNm)
+ 	printf("\t 7)VI (3S Thermal sensor) - VI dump.\n");
+ 	printf("\t 8)VI (MM308M2 YUV sensor) - VI dump.\n");
+ 	printf("\t 9)VI (MCS369Q YUV sensor) - VI dump.\n");
++	printf("\t20)VI (OV5647) - dump 5 frames to /mnt/data/sample_0.yuv.\n");
+ 	printf("\t10)VPSS(Offline, file read/write, combine 2 frame into 1).\n");
+ #ifdef ARCH_CV183X
+ 	printf("\t11)VI (N5 YUV sensor) - VI dump.\n");
+@@ -121,6 +122,9 @@ int main(int argc, char *argv[])
+ 	case 9:
+ 		s32Ret = SAMPLE_MCS369Q_TEST();
+ 		break;
++	case 20:
++		s32Ret = SAMPLE_OV5647_DUMP_TEST();
++		break;
+ 
+ 	case 10: {
+ 		SIZE_S stSize;
+diff --git a/osdrv/extdrv/wireless/aic8800/aic8800_bsp/aic_bsp_main.c b/osdrv/extdrv/wireless/aic8800/aic8800_bsp/aic_bsp_main.c
+index 062944f3a..cd45f853b 100755
+--- a/osdrv/extdrv/wireless/aic8800/aic8800_bsp/aic_bsp_main.c
++++ b/osdrv/extdrv/wireless/aic8800/aic8800_bsp/aic_bsp_main.c
+@@ -15,7 +15,7 @@
+ #define DRV_AUTHOR            "AICSemi"
+ #define DRV_VERS_MOD          "1.0"
+ 
+-int aicwf_dbg_level_bsp = LOGERROR|LOGINFO|LOGDEBUG|LOGTRACE;
++int aicwf_dbg_level_bsp = LOGERROR;   // 默认只留错误, 避免 LOGDEBUG 刷屏
+ 
+ struct semaphore aicbsp_probe_semaphore;
+ 
+diff --git a/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/aic_btsdio.h b/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/aic_btsdio.h
+index a58edc97f..fcd56c34e 100755
+--- a/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/aic_btsdio.h
++++ b/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/aic_btsdio.h
+@@ -31,15 +31,10 @@
+ #define PRINT_ACL_DATA          1
+ #define PRINT_SCO_DATA          1
+ 
+-#define AICBT_DBG_FLAG          1
++#define AICBT_DBG_FLAG          0   // 关 BT 调试打印, 减少 dmesg 噪声
+ 
+-#if AICBT_DBG_FLAG
+-#define AICBT_DBG(fmt, arg...) printk( "aic_btsdio: " fmt "\n" , ## arg)
+-#else
+ #define AICBT_DBG(fmt, arg...)
+-#endif
+-
+-#define AICBT_INFO(fmt, arg...) printk("aic_btsdio: " fmt "\n" , ## arg)
++#define AICBT_INFO(fmt, arg...)   /* 关 BT info 打印, 减少 dmesg 噪声 */
+ #define AICBT_WARN(fmt, arg...) printk("aic_btsdio: " fmt "\n" , ## arg)
+ #define AICBT_ERR(fmt, arg...) printk("aic_btsdio: " fmt "\n" , ## arg)
+ 
+diff --git a/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/rwnx_main.c b/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/rwnx_main.c
+index 29c75404a..e473f1f67 100755
+--- a/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/rwnx_main.c
++++ b/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/rwnx_main.c
+@@ -522,7 +522,7 @@ static const int rwnx_hwq2uapsd[NL80211_NUM_ACS] = {
+ 
+ 
+ extern uint8_t scanning;
+-int aicwf_dbg_level = LOGERROR|LOGINFO|LOGDEBUG|LOGTRACE|LOGFW;
++int aicwf_dbg_level = LOGERROR;   // 默认只留错误, 避免 LOGDEBUG 刷屏 (可用参数覆盖)
+ module_param(aicwf_dbg_level, int, 0660);
+ int testmode = 0;
+ char aic_fw_path[200];
+diff --git a/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/rwnx_platform.c b/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/rwnx_platform.c
+index bedbb7672..06b65f623 100755
+--- a/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/rwnx_platform.c
++++ b/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/rwnx_platform.c
+@@ -1066,7 +1066,7 @@ s8_l get_txpwr_max(s8_l power)
+ 	    }
+ 	}
+ 
+-	printk("%s:txpwr_max:%d \r\n",__func__,power);
++	/* printk("%s:txpwr_max:%d \r\n",__func__,power); */  // 噪声: 每次取功率都刷
+ 	return power;
+ }
+ 
+diff --git a/osdrv/interdrv/v2/cif/chip/mars/cif.c b/osdrv/interdrv/v2/cif/chip/mars/cif.c
+index 539878a3a..aabdad2fc 100644
+--- a/osdrv/interdrv/v2/cif/chip/mars/cif.c
++++ b/osdrv/interdrv/v2/cif/chip/mars/cif.c
+@@ -2873,10 +2873,44 @@ static int _init_resource(struct platform_device *pdev)
+ 		if (gpio_request(link->snsr_rst_pin, "snsr-rst-gpio"))
+ 			return 0;
+ 
++		/* Keep the sensor reset pad hi-z (input) by default so an
++		 * external supply can drive it (LicheeRV Nano cam bring-up).
++		 * Only explicit ioctl RESET/UNRESET switches it to output. */
++		gpio_direction_input(link->snsr_rst_pin);
++
+ 		dev_info(&pdev->dev, "rst_pin = %d, pol = %d\n",
+ 			link->snsr_rst_pin, link->snsr_rst_pol);
+ 	}
+ 
++	/* power-en pin (e.g. MIPIRX0N/XGPIOC_10 on LicheeRV Nano):
++	 * switch FUNCSEL away from CAM_MCLK1 clock output and keep the
++	 * pad hi-z (input) for external 3.3V driving. */
++	for (i = 0; i < MAX_LINK_NUM; ++i) {
++		link = &dev->link[i];
++		link->snsr_pwr_pin = of_get_named_gpio_flags(pdev->dev.of_node,
++				"power-en-gpio", i, &link->snsr_pwr_pol);
++		if (link->snsr_pwr_pin < 0)
++			break;
++
++		if (gpio_request(link->snsr_pwr_pin, "snsr-pwr-gpio"))
++			return 0;
++
++		gpio_direction_input(link->snsr_pwr_pin);
++
++		dev_info(&pdev->dev, "pwr_pin = %d, pol = %d\n",
++			link->snsr_pwr_pin, link->snsr_pwr_pol);
++	}
++	/* MIPIRX0N: CAM_MCLK1 (func 5) -> XGPIOC_10 (func 3) so the pad
++	 * stops driving the MCLK clock and becomes a plain hi-z GPIO. */
++	{
++		void __iomem *pinmux = ioremap(0x03001000, 0x1000);
++
++		if (pinmux) {
++			writel(0x3, pinmux + 0x18C);
++			iounmap(pinmux);
++		}
++	}
++
+ 	/* sw reset */
+ 	link = &dev->link[0];
+ 	link->phy_reset = devm_reset_control_get(&pdev->dev, "phy0");
+diff --git a/osdrv/interdrv/v2/cif/chip/mars/cif.h b/osdrv/interdrv/v2/cif/chip/mars/cif.h
+index 4accd2643..d243d5f23 100644
+--- a/osdrv/interdrv/v2/cif/chip/mars/cif.h
++++ b/osdrv/interdrv/v2/cif/chip/mars/cif.h
+@@ -33,6 +33,8 @@ struct cvi_link {
+ 	unsigned int			distance_fp;
+ 	int				snsr_rst_pin;
+ 	enum of_gpio_flags		snsr_rst_pol;
++	int				snsr_pwr_pin;
++	enum of_gpio_flags		snsr_pwr_pol;
+ 	union {
+ 		struct cvi_csi_status	sts_csi;
+ 		struct cvi_lvds_status	sts_lvds;
+diff --git a/osdrv/interdrv/v2/rtc/rtc.c b/osdrv/interdrv/v2/rtc/rtc.c
+index bed942400..86a1d713d 100644
+--- a/osdrv/interdrv/v2/rtc/rtc.c
++++ b/osdrv/interdrv/v2/rtc/rtc.c
+@@ -90,7 +90,7 @@ static int cvi_rtc_read_time(struct device *dev, struct rtc_time *tm)
+ 
+ 	dev_vdbg(dev, "%s %lu\n", __func__, sec);
+ 
+-	dev_notice(dev, "time read as %lu. %d/%d/%d %d:%02u:%02u\n",
++	dev_vdbg(dev, "time read as %lu. %d/%d/%d %d:%02u:%02u\n",
+ 		sec,
+ 		tm->tm_mon + 1,
+ 		tm->tm_mday,
+@@ -122,7 +122,7 @@ static int cvi_rtc_set_time(struct device *dev, struct rtc_time *tm)
+ #endif
+ 	dev_vdbg(dev, "%s %lu\n", __func__, sec);
+ 
+-	dev_notice(dev, "time set to %lu. %d/%d/%d %d:%02u:%02u\n",
++	dev_vdbg(dev, "time set to %lu. %d/%d/%d %d:%02u:%02u\n",
+ 		sec,
+ 		tm->tm_mon+1,
+ 		tm->tm_mday,
+diff --git a/osdrv/interdrv/v2/vi/chip/mars/vi.c b/osdrv/interdrv/v2/vi/chip/mars/vi.c
+index 55285f710..7a06fef5f 100644
+--- a/osdrv/interdrv/v2/vi/chip/mars/vi.c
++++ b/osdrv/interdrv/v2/vi/chip/mars/vi.c
+@@ -2821,7 +2821,7 @@ int vi_start_streaming(struct cvi_vi_dev *vdev)
+ 	enum cvi_isp_raw raw_max = ISP_PRERAW_MAX - 1;
+ 	int rc = 0;
+ 
+-	vi_pr(VI_DBG, "+\n");
++	pr_err("DBG vi_start_streaming enter\n");
+ 
+ 	if (_vi_resume(vdev) != 0) {
+ 		vi_pr(VI_ERR, "vi resume failed\n");
+@@ -2850,8 +2850,14 @@ int vi_start_streaming(struct cvi_vi_dev *vdev)
+ 		/* Get stagger vsync info from cif */
+ 		cif_attr.devno = raw_num;
+ 
+-		if (!ctx->isp_pipe_enable[raw_num])
++		if (!ctx->isp_pipe_enable[raw_num]) {
++			pr_err("DBG start_streaming raw=%d pipe NOT enabled\n", raw_num);
+ 			continue;
++		}
++
++		pr_err("DBG start_streaming raw=%d pipe enabled, offline_preraw=%d yuv_bypass=%d hdr=%d\n",
++			raw_num, ctx->isp_pipe_cfg[raw_num].is_offline_preraw,
++			ctx->isp_pipe_cfg[raw_num].is_yuv_bypass_path, ctx->isp_pipe_cfg[raw_num].is_hdr_on);
+ 
+ 		if (_vi_call_cb(E_MODULE_CIF, CIF_CB_GET_CIF_ATTR, &cif_attr) == 0)
+ 			ctx->isp_pipe_cfg[raw_num].is_stagger_vsync = cif_attr.stagger_vsync;
+diff --git a/osdrv/interdrv/v2/vi/chip/mars/vi_sdk_layer.c b/osdrv/interdrv/v2/vi/chip/mars/vi_sdk_layer.c
+index 5eb0b4181..75bdf7250 100644
+--- a/osdrv/interdrv/v2/vi/chip/mars/vi_sdk_layer.c
++++ b/osdrv/interdrv/v2/vi/chip/mars/vi_sdk_layer.c
+@@ -453,6 +453,8 @@ CVI_S32 vi_enable_chn(VI_CHN ViChn)
+ 	enum cvi_isp_raw raw_num = ISP_PRERAW_A;
+ 	u8 create_thread = false;
+ 
++	pr_err("DBG vi_enable_chn enter total_chn_num=%d\n", gViCtx->total_chn_num);
++
+ 	for (i = 0; i < gViCtx->total_chn_num; i++) {
+ 		CVI_U8 num_buffers = 0;
+ 		MMF_CHN_S chn = {.enModId = CVI_ID_VI, .s32DevId = 0, .s32ChnId = i};
+@@ -479,6 +481,10 @@ CVI_S32 vi_enable_chn(VI_CHN ViChn)
+ 		base_mod_jobs_init(chn, CHN_TYPE_OUT, 0, num_buffers, gViCtx->chnAttr[i].u32Depth);
+ 
+ 		raw_num = find_raw_num_by_chn(ctx, i);
++		pr_err("DBG chn[%d] size=%dx%d depth=%d num_buf=%d raw=%d offline_scaler=%d pipe_enable=%d\n",
++			i, gViCtx->chnAttr[i].stSize.u32Width, gViCtx->chnAttr[i].stSize.u32Height,
++			gViCtx->chnAttr[i].u32Depth, num_buffers, raw_num,
++			ctx->isp_pipe_cfg[raw_num].is_offline_scaler, ctx->isp_pipe_enable[raw_num]);
+ 		if (ctx->isp_pipe_cfg[raw_num].is_offline_scaler) {
+ 			u8 j = 0;
+ 
+@@ -511,6 +517,7 @@ CVI_S32 vi_enable_chn(VI_CHN ViChn)
+ 		}
+ 	}
+ 
++	pr_err("DBG vi_enable_chn before vi_start_streaming\n");
+ 	if (vi_start_streaming(gvdev)) {
+ 		vi_pr(VI_ERR, "Failed to vi start streaming\n");
+ 		rc = -EAGAIN;
+diff --git a/osdrv/interdrv/v2/vpss/chip/mars/vpss_core.c b/osdrv/interdrv/v2/vpss/chip/mars/vpss_core.c
+index 1834c12d1..463e47f0d 100644
+--- a/osdrv/interdrv/v2/vpss/chip/mars/vpss_core.c
++++ b/osdrv/interdrv/v2/vpss/chip/mars/vpss_core.c
+@@ -1362,7 +1362,7 @@ static int vpss_open(struct inode *inode, struct file *filep)
+ 	struct cvi_sc_vdev *sdev;
+ 	int i, j;
+ 
+-	pr_info("vpss_open\n");
++	/* pr_info("vpss_open\n"); */  // 噪声: 每次 open 都刷
+ 
+ 	if (!dev) {
+ 		pr_err("Cannot find vpss private data\n");
+@@ -1371,7 +1371,7 @@ static int vpss_open(struct inode *inode, struct file *filep)
+ 
+ 	i = atomic_inc_return(&open_count);
+ 	if (i > 1) {
+-		pr_info("vpss_open: open %d times\n", i);
++		/* pr_info("vpss_open: open %d times\n", i); */  // 噪声
+ 		return 0;
+ 	}
+ 
+@@ -1424,7 +1424,7 @@ static int vpss_release(struct inode *inode, struct file *filep)
+ 		container_of(filep->private_data, struct cvi_vip_dev, miscdev);
+ 	int i;
+ 
+-	pr_info("vpss_release\n");
++	/* pr_info("vpss_release\n"); */  // 噪声: 每次 close 都刷
+ 
+ 	if (!dev) {
+ 		pr_err("Cannot find vpss private data\n");
+@@ -1433,7 +1433,7 @@ static int vpss_release(struct inode *inode, struct file *filep)
+ 
+ 	i = atomic_dec_return(&open_count);
+ 	if (i) {
+-		pr_info("vpss_close: open %d times\n", i);
++		/* pr_info("vpss_close: open %d times\n", i); */  // 噪声
+ 		return 0;
+ 	}
+ 

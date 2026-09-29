@@ -1,0 +1,70 @@
+#!/bin/sh
+# S90ewelink — eWelink 控制守护进程自启
+# 依赖 S30wifi（WiFi 就绪后）→ 读取 /etc/ewelink.env 凭证 → 拉起 ewelink daemon
+# 重跑：/etc/init.d/S90ewelink start|stop|restart
+
+DAEMON=/mnt/system/usr/bin/ewelink-rs
+ENVFILE=/etc/ewelink.env
+SOCKET_PATH=~/.ewelink-rs-daemon.sock
+LOG=~/.ewelink-rs-daemon.log
+
+start() {
+	if [ ! -x "$DAEMON" ]; then
+		echo "ewelink: $DAEMON 不存在，跳过"
+		return 1
+	fi
+	if [ ! -f "$ENVFILE" ]; then
+		echo "ewelink: $ENVFILE 缺失（首次需部署凭证），跳过"
+		return 1
+	fi
+	# 凭证环境变量注入 daemon 进程
+	set -a
+	. "$ENVFILE"
+	set +a
+	# 已运行则跳过：必须"进程 + socket"双校验。
+	# 崩溃/断电/被 -9 杀死时 socket 文件会残留（曾致 daemon 自 08-21 起一直未启动，
+	# 喂食链路整条失效）——陈旧 socket 不能当成"在运行"。
+	if [ -S "$SOCKET_PATH" ] && ps -ef | grep -q '[e]welink-rs daemon'; then
+		echo "ewelink: daemon 已在运行"
+		return 0
+	fi
+	if [ -S "$SOCKET_PATH" ]; then
+		echo "ewelink: 陈旧 socket（无 daemon 进程），清理后重新启动"
+		rm -f "$SOCKET_PATH"
+	fi
+	# 后台拉起，日志写文件；HOME 需固定以便 socket/缓存路径稳定
+	HOME=${HOME:-/root} "$DAEMON" daemon >>"$LOG" 2>&1 &
+	echo "ewelink: daemon 启动 (pid $!)"
+	# 等 socket 就绪（最多 3s）
+	i=0
+	while [ $i -lt 30 ] && [ ! -S "$SOCKET_PATH" ]; do
+		sleep 0.1
+		i=$((i + 1))
+	done
+	if [ -S "$SOCKET_PATH" ]; then
+		echo "ewelink: socket 就绪"
+	else
+		echo "ewelink: socket 未就绪（检查 $LOG）"
+	fi
+}
+
+stop() {
+	# 通过 socket 优雅退出
+	if [ -S "$SOCKET_PATH" ]; then
+		printf 'quit\n' | socat - UNIX-CONNECT:"$SOCKET_PATH" 2>/dev/null || \
+			printf 'quit\n' | nc -U "$SOCKET_PATH" 2>/dev/null || \
+			kill $(ps -ef | grep '[e]welink-rs daemon' | awk '{print $1}') 2>/dev/null
+	fi
+	# 兜底 kill
+	pkill -f '[e]welink-rs daemon' 2>/dev/null
+	sleep 0.5
+	rm -f "$SOCKET_PATH"
+	echo "ewelink: daemon 已停止"
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart) stop; start ;;
+	*) echo "用法: $0 start|stop|restart" ;;
+esac

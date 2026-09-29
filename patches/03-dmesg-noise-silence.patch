@@ -1,0 +1,83 @@
+diff --git a/osdrv/extdrv/wireless/aic8800/aic8800_bsp/aic_bsp_main.c b/osdrv/extdrv/wireless/aic8800/aic8800_bsp/aic_bsp_main.c
+index 062944f3a..cd45f853b 100755
+--- a/osdrv/extdrv/wireless/aic8800/aic8800_bsp/aic_bsp_main.c
++++ b/osdrv/extdrv/wireless/aic8800/aic8800_bsp/aic_bsp_main.c
+@@ -15,7 +15,7 @@
+ #define DRV_AUTHOR            "AICSemi"
+ #define DRV_VERS_MOD          "1.0"
+ 
+-int aicwf_dbg_level_bsp = LOGERROR|LOGINFO|LOGDEBUG|LOGTRACE;
++int aicwf_dbg_level_bsp = LOGERROR;   // 默认只留错误, 避免 LOGDEBUG 刷屏
+ 
+ struct semaphore aicbsp_probe_semaphore;
+ 
+diff --git a/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/aic_btsdio.h b/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/aic_btsdio.h
+index a58edc97f..fcd56c34e 100755
+--- a/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/aic_btsdio.h
++++ b/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/aic_btsdio.h
+@@ -31,15 +31,10 @@
+ #define PRINT_ACL_DATA          1
+ #define PRINT_SCO_DATA          1
+ 
+-#define AICBT_DBG_FLAG          1
++#define AICBT_DBG_FLAG          0   // 关 BT 调试打印, 减少 dmesg 噪声
+ 
+-#if AICBT_DBG_FLAG
+-#define AICBT_DBG(fmt, arg...) printk( "aic_btsdio: " fmt "\n" , ## arg)
+-#else
+ #define AICBT_DBG(fmt, arg...)
+-#endif
+-
+-#define AICBT_INFO(fmt, arg...) printk("aic_btsdio: " fmt "\n" , ## arg)
++#define AICBT_INFO(fmt, arg...)   /* 关 BT info 打印, 减少 dmesg 噪声 */
+ #define AICBT_WARN(fmt, arg...) printk("aic_btsdio: " fmt "\n" , ## arg)
+ #define AICBT_ERR(fmt, arg...) printk("aic_btsdio: " fmt "\n" , ## arg)
+ 
+diff --git a/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/rwnx_main.c b/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/rwnx_main.c
+index 29c75404a..e473f1f67 100755
+--- a/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/rwnx_main.c
++++ b/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/rwnx_main.c
+@@ -522,7 +522,7 @@ static const int rwnx_hwq2uapsd[NL80211_NUM_ACS] = {
+ 
+ 
+ extern uint8_t scanning;
+-int aicwf_dbg_level = LOGERROR|LOGINFO|LOGDEBUG|LOGTRACE|LOGFW;
++int aicwf_dbg_level = LOGERROR;   // 默认只留错误, 避免 LOGDEBUG 刷屏 (可用参数覆盖)
+ module_param(aicwf_dbg_level, int, 0660);
+ int testmode = 0;
+ char aic_fw_path[200];
+diff --git a/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/rwnx_platform.c b/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/rwnx_platform.c
+index bedbb7672..06b65f623 100755
+--- a/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/rwnx_platform.c
++++ b/osdrv/extdrv/wireless/aic8800/aic8800_fdrv/rwnx_platform.c
+@@ -1066,7 +1066,7 @@ s8_l get_txpwr_max(s8_l power)
+ 	    }
+ 	}
+ 
+-	printk("%s:txpwr_max:%d \r\n",__func__,power);
++	/* printk("%s:txpwr_max:%d \r\n",__func__,power); */  // 噪声: 每次取功率都刷
+ 	return power;
+ }
+ 
+diff --git a/osdrv/interdrv/v2/rtc/rtc.c b/osdrv/interdrv/v2/rtc/rtc.c
+index bed942400..86a1d713d 100644
+--- a/osdrv/interdrv/v2/rtc/rtc.c
++++ b/osdrv/interdrv/v2/rtc/rtc.c
+@@ -90,7 +90,7 @@ static int cvi_rtc_read_time(struct device *dev, struct rtc_time *tm)
+ 
+ 	dev_vdbg(dev, "%s %lu\n", __func__, sec);
+ 
+-	dev_notice(dev, "time read as %lu. %d/%d/%d %d:%02u:%02u\n",
++	dev_vdbg(dev, "time read as %lu. %d/%d/%d %d:%02u:%02u\n",
+ 		sec,
+ 		tm->tm_mon + 1,
+ 		tm->tm_mday,
+@@ -122,7 +122,7 @@ static int cvi_rtc_set_time(struct device *dev, struct rtc_time *tm)
+ #endif
+ 	dev_vdbg(dev, "%s %lu\n", __func__, sec);
+ 
+-	dev_notice(dev, "time set to %lu. %d/%d/%d %d:%02u:%02u\n",
++	dev_vdbg(dev, "time set to %lu. %d/%d/%d %d:%02u:%02u\n",
+ 		sec,
+ 		tm->tm_mon+1,
+ 		tm->tm_mday,

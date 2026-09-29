@@ -1,0 +1,39 @@
+#! /bin/sh
+# S97wifidisc — 板子发现服务：UDP 广播管理台地址（供安卓 APP 自动跳转）
+# 每 3s 广播 {"svc":"licheerv-admin","name":...,"ip":<wlan0>,"port":8080} 到 255.255.255.255:37777
+# 应答 "LICHEERV-DISCOVER?" 探测；IP 变化立即补发
+
+DAEMON=/usr/bin/wifidisc.py
+PIDFILE=/var/run/wifidisc.pid
+
+start() {
+	if [ ! -x "$DAEMON" ]; then
+		echo "wifidisc: $DAEMON 不存在，跳过"
+		return 1
+	fi
+	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+		echo "wifidisc: 已在运行 (pid $(cat "$PIDFILE"))"
+		return 0
+	fi
+	"$DAEMON" >>/var/log/wifidisc.log 2>&1 &
+	echo $! >"$PIDFILE"
+	echo "wifidisc: 启动 (pid $!)"
+}
+
+stop() {
+	if [ -f "$PIDFILE" ]; then
+		kill "$(cat "$PIDFILE")" 2>/dev/null || kill -9 "$(cat "$PIDFILE")" 2>/dev/null
+		rm -f "$PIDFILE"
+	fi
+	for p in $(ps -ef | grep "[w]ifidisc.py" | awk "{print \$1}"); do
+		kill -9 "$p" 2>/dev/null
+	done
+	echo "wifidisc: 已停止"
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart) stop; sleep 0.3; start ;;
+	*) echo "用法: $0 start|stop|restart"; exit 1 ;;
+esac

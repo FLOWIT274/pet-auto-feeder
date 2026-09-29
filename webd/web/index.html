@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LicheeRV 管理台</title>
+<style>
+  :root {
+    --bg: #10131a; --card: #1a1f2b; --line: #2a3140;
+    --fg: #d8dee9; --dim: #8b94a7; --ok: #4cc38a; --bad: #e06c5e; --warn: #d9a13b;
+    --acc: #6ea8fe;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; background: var(--card); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 17px; }
+  header .sub { color: var(--dim); font-size: 12px; }
+  header .spacer { flex: 1; }
+  .tabs { display: flex; gap: 4px; margin-left: 10px; background: var(--bg); border-radius: 8px; padding: 3px; }
+  .tab { border: 0; background: transparent; color: var(--dim); font-size: 13px; padding: 6px 16px; border-radius: 6px; cursor: pointer; }
+  .tab.active { background: var(--accent); color: #fff; }
+  .btn { background: #252c3d; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px; cursor: pointer; font-size: 13px; }
+  .btn:hover { border-color: var(--acc); }
+  .btn:disabled { opacity: .45; cursor: default; }
+  /* 开关 */
+  .switch { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; user-select: none; font-size: 13px; color: var(--fg); }
+  .switch input { display: none; }
+  .switch .track { width: 34px; height: 18px; border-radius: 20px; background: #3a4152; position: relative; transition: background .15s; }
+  .switch .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #d8dee9; transition: left .15s; }
+  .switch input:checked + .track { background: var(--acc); }
+  .switch input:checked + .track::after { left: 18px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(430px, 100%), 1fr)); gap: 14px; padding: 14px 20px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  .card h2 { font-size: 14px; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+  .card h2 .tag { font-size: 11px; color: var(--dim); font-weight: normal; }
+  details.card summary { cursor: pointer; font-weight: 600; color: var(--dim); font-size: 13px; }
+  details.card[open] summary { margin-bottom: 10px; color: var(--fg); }
+  details.card .adv-inner { display: flex; flex-direction: column; gap: 12px; }
+  .hours-wrap { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+  .hours { display: flex; flex-wrap: wrap; gap: 6px; max-width: 520px; }
+  .hours button { min-width: 44px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--dim); cursor: pointer; font-size: 13px; }
+  .hours button.on { background: var(--acc); color: #fff; border-color: var(--acc); }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; }
+  .badge.ok { background: #14372a; color: var(--ok); }
+  .badge.bad { background: #3a1b18; color: var(--bad); }
+  .badge.warn { background: #3a2c12; color: var(--warn); }
+  .kvs { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; font-size: 13px; }
+  .kvs .k { color: var(--dim); }
+  pre.out { background: #0d1017; border: 1px solid var(--line); border-radius: 6px; padding: 8px; font: 12px/1.5 monospace; white-space: pre-wrap; max-height: 260px; overflow: auto; margin-top: 8px; }
+  form.inline { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; align-items: center; }
+  input, select { background: #0d1017; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font-size: 13px; }
+  input[type=number] { width: 90px; }
+  .muted { color: var(--dim); font-size: 12px; }
+  .err { color: var(--bad); }
+  .oktext { color: var(--ok); }
+  img.frame { width: 100%; max-width: 480px; border-radius: 8px; border: 1px solid var(--line); background: #000; aspect-ratio: 16/9; object-fit: contain; }
+  .frame-wrap { position: relative; display: inline-block; width: 100%; max-width: 480px; }
+  .frame-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .btn.sm { padding: 4px 10px; font-size: 12px; }
+  /* 视觉全屏：画面占满、检测框叠加层跟随、移动端横屏适配 */
+  #vis-card:fullscreen { background: #000; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0; max-width: none; width: 100vw; height: 100vh; }
+  #vis-card:fullscreen .frame-wrap { max-width: none; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+  #vis-card:fullscreen img.frame { max-width: none; width: 100%; height: 100%; max-height: 100vh; aspect-ratio: auto; object-fit: contain; border: 0; border-radius: 0; }
+  #vis-card:fullscreen .frame-wrap canvas { width: 100%; height: 100%; }
+  #vis-card:fullscreen h2, #vis-card:fullscreen .det-list, #vis-card:fullscreen .muted { display: none; }
+  #vis-card:-webkit-full-screen { background: #000; }
+  .det-list { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .det { background: #232b3d; border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; font-size: 12px; }
+  .det .cls { color: var(--acc); font-weight: bold; }
+  .det .sc { color: var(--dim); }
+  .hidden { display: none !important; }
+  .bar-wrap { margin: 8px 0; height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden; }
+  .bar { height: 100%; width: 0%; background: var(--acc); transition: width .2s; }
+  .bar.hot { background: #ff5c5c; }
+  .bar-txt { margin-top: 4px; display: block; font-size: 12px; }
+  .det.err { border-color: #ff5c5c; color: #ff8c8c; }
+  /* 移动端适配 */
+  @media (max-width: 640px) {
+    body { font-size: 13px; -webkit-tap-highlight-color: transparent; }
+    header { padding: 10px 12px; flex-wrap: wrap; gap: 8px; }
+    header h1 { font-size: 15px; }
+    header .sub { display: none; }
+    .grid { grid-template-columns: 1fr; padding: 10px 12px; gap: 10px; }
+    .card { padding: 12px; }
+    .btn { padding: 8px 14px; font-size: 14px; }
+    .switch { font-size: 14px; }
+    .switch .track { width: 40px; height: 22px; }
+    .switch .track::after { top: 3px; left: 3px; width: 16px; height: 16px; }
+    .switch input:checked + .track::after { left: 21px; }
+    .det { padding: 5px 10px; font-size: 13px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>LicheeRV 管理台</h1>
+  <span class="sub" id="ver">webd …</span>
+  <nav class="tabs">
+    <button class="tab active" id="tab-mon" onclick="showTab('mon')">监控</button>
+    <button class="tab" id="tab-set" onclick="showTab('set')">设置</button>
+  </nav>
+  <span class="spacer"></span>
+  <button class="btn" onclick="refreshAll()">刷新全部</button>
+</header>
+
+<!-- ===== 第一层：监控（常开） ===== -->
+<div class="grid" id="page-mon">
+
+  <!-- 系统概览 -->
+  <div class="card">
+    <h2>系统概览 <span class="tag" id="sys-ts"></span></h2>
+    <div class="kvs" id="sys-kvs"></div>
+  </div>
+
+  <!-- 网络 -->
+  <div class="card">
+    <h2>网络 <span class="tag" id="net-ts"></span></h2>
+    <div class="kvs" id="net-kvs"></div>
+  </div>
+
+  <!-- 视觉监控（常开） -->
+  <div class="card" id="vis-card">
+    <h2>视觉监控
+      <span class="badge" id="vis-badge">…</span>
+      <button class="btn sm" onclick="visFullscreen()" title="全屏查看（移动端自动横屏）">全屏</button>
+    </h2>
+    <div class="frame-wrap">
+      <img class="frame" id="vis-frame" alt="无画面">
+      <canvas id="vis-canvas"></canvas>
+    </div>
+    <div class="det-list" id="vis-dets"></div>
+    <div class="muted" id="vis-ws"></div>
+  </div>
+
+  </div>
+
+<!-- ===== 第二层：设置（管理/调试） ===== -->
+<div class="grid hidden" id="page-set">
+
+  <!-- 参数配置 -->
+  <div class="card">
+    <h2>参数配置 <span class="tag" id="cfg-ts"></span></h2>
+    <div class="kvs" id="cfg-kvs"></div>
+    <div class="muted" id="cfg-fixed" style="margin:6px 0">固定参数：狗窗口 1.2s、置信阈值 65%（不可改）</div>
+    <form class="inline" onsubmit="cfgSave(event)">
+      <label class="muted">每日配额</label>
+      <input type="number" id="cfg-quota" min="1" max="1000" style="width:70px">
+      <label class="muted">通电时长</label>
+      <input type="number" id="cfg-socksec" min="1" max="3600" style="width:70px">
+      <span class="muted">s</span>
+      <div class="hours-wrap">
+        <label class="muted">刷新时刻（整点，可多选）</label>
+        <div class="hours" id="cfg-hours"></div>
+      </div>
+      <label class="switch" style="margin:4px 0" title="配额用尽时若关闭，则摄像头/实时视频一起停止，最省资源；开启则保留实时画面，仅暂停推理">
+        <input type="checkbox" id="cfg-keepvideo">
+        <span class="track"></span>
+        配额用尽时保留视频流
+      </label>
+      <button class="btn" type="submit">保存</button>
+    </form>
+    <pre class="out" id="cfg-out"></pre>
+  </div>
+
+  <!-- 自动喂食 & 插座控制（合并） -->
+  <div class="card">
+    <h2>自动喂食 & 插座控制
+      <span class="badge" id="sk-badge">…</span>
+      <span class="badge" id="ctl-badge">…</span>
+    </h2>
+    <div class="kvs" id="sk-kvs"></div>
+    <div class="det-list" id="sk-ch" style="margin-bottom:4px"></div>
+    <div class="kvs" id="ctl-kvs"></div>
+    <form class="inline">
+      <button class="btn" type="button" onclick="skPulse(5)">通电 5s</button>
+      <button class="btn" type="button" onclick="skPulse(10)">通电 10s</button>
+      <button class="btn" type="button" onclick="skPulse(30)">通电 30s</button>
+      <input type="number" id="sk-sec" value="10" min="1" max="3600" step="1">
+      <span class="muted">秒</span>
+      <button class="btn" type="button" onclick="skPulse(Number(el('sk-sec').value))">自定义通电</button>
+      <button class="btn" type="button" onclick="daemonStart()">拉起 daemon</button>
+      <button class="btn" type="button" onclick="ctlTest()">手动测试触发（不扣配额）</button>
+      <button class="btn" type="button" onclick="ctlReset()">配额清零</button>
+    </form>
+    <pre class="out" id="sk-out"></pre>
+  </div>
+
+  <!-- 高级 / 调试（默认折叠） -->
+  <details class="card" id="adv">
+    <summary>高级 / 调试</summary>
+    <div class="adv-inner">
+      <div class="card">
+        <h2>调试模式
+          <span class="badge" id="dbg-badge">…</span>
+        </h2>
+        <div class="kvs" id="dbg-kvs"></div>
+        <label class="switch" title="开启后插座通电/断电/pulse 全部转为日志输出，不操作实际设备">
+          <input type="checkbox" id="dbg-toggle" onchange="dbgToggle()">
+          <span class="track"></span>
+          关闭实际设备操作（改为日志输出）
+        </label>
+        <pre class="out" id="dbg-out"></pre>
+      </div>
+      <div class="card">
+        <h2>按键监视
+          <span class="badge" id="key-badge">…</span>
+        </h2>
+        <div class="kvs" id="key-kvs"></div>
+        <div class="bar-wrap"><div class="bar" id="key-bar"></div></div>
+        <span class="bar-txt muted" id="key-bar-txt"></span>
+        <div class="det-list" id="key-history"></div>
+      </div>
+    </div>
+  </details>
+
+</div>
+
+<script>
+"use strict";
+let visWs = null, frameBusy = false, visStale = false;
+let cfgHours = new Set([6]);   // 当前选中的配额刷新整点
+
+async function j(url, opt) {
+  const r = await fetch(url, opt);
+  let body = null;
+  try { body = await r.json(); } catch (_) { body = null; }
+  return { status: r.status, body };
+}
+
+function el(id) { return document.getElementById(id); }
+function fmt(ms) {
+  if (!ms) return "";
+  return new Date(ms).toLocaleTimeString("zh-CN", { hour12: false });
+}
+function fmtBytes(b) {
+  if (b === undefined || b === null) return "-";
+  if (b > 1 << 30) return (b / (1 << 30)).toFixed(2) + " GB";
+  if (b > 1 << 20) return (b / (1 << 20)).toFixed(1) + " MB";
+  if (b > 1 << 10) return (b / (1 << 10)).toFixed(0) + " KB";
+  return b + " B";
+}
+function fmtUptime(s) {
+  if (!s) return "-";
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  return (d ? d + "天 " : "") + h + "h " + m + "m";
+}
+function kvs(rows) {
+  return rows.map(r => `<span class="k">${r[0]}</span><span>${r[1]}</span>`).join("");
+}
+
+/* ---------- 系统 ---------- */
+async function loadSystem() {
+  const { body } = await j("/api/system");
+  if (!body) return;
+  el("sys-ts").textContent = fmt(Date.now());
+  const mem = body.mem || {}, swap = body.swap || {};
+  const memUsedPct = mem.total_kb ? (100 * (mem.total_kb - mem.avail_kb) / mem.total_kb).toFixed(0) : "-";
+  const disks = (body.disks || []).map(d =>
+    `${d.path} ${fmtBytes(d.total_bytes)}（已用 ${d.used_pct.toFixed(0)}%）`).join("<br>");
+  el("sys-kvs").innerHTML = kvs([
+    ["主机名", body.hostname || "-"],
+    ["运行时间", fmtUptime(body.uptime_secs)],
+    ["负载", (body.loadavg || []).map(x => x.toFixed(2)).join(" / ")],
+    ["CPU", body.cpu_percent === null ? "采样中…" : body.cpu_percent.toFixed(1) + "%"],
+    ["内存", `${fmtBytes((mem.avail_kb||0)*1024)} 可用 / ${fmtBytes((mem.total_kb||0)*1024)}（${memUsedPct}%）`],
+    ["Swap", `${fmtBytes(((swap.total_kb||0)-(swap.free_kb||0))*1024)} / ${fmtBytes((swap.total_kb||0)*1024)}`],
+    ["磁盘", disks || "-"],
+    ["温度", body.temp_c === null || body.temp_c === undefined ? "-" : body.temp_c.toFixed(1) + " ℃"],
+  ]);
+}
+
+/* ---------- 网络 ---------- */
+async function loadNetwork() {
+  const { body } = await j("/api/network");
+  if (!body) return;
+  el("net-ts").textContent = fmt(Date.now());
+  const ifs = (body.interfaces || []).map(i =>
+    `${i.name} <span class="muted">${i.mac || "-"}</span> → <b>${i.ip4 || "无 IP"}</b>`).join("<br>");
+  const modeMap = { sta: "STA（已连接网络）", config_ap: "AP 配置窗口（wificfgd）", unknown: "未知" };
+  el("net-kvs").innerHTML = kvs([
+    ["网卡", ifs || "-"],
+    ["默认网关", body.default_gw_iface || "-"],
+    ["WiFi 模式", (modeMap[body.wifi?.mode] || body.wifi?.mode) + (body.wifi?.configured_ssid ? `（配置 SSID: ${body.wifi.configured_ssid}）` : "")],
+  ]);
+}
+
+/* ---------- 层级切换 ---------- */
+function showTab(name) {
+  el("page-mon").classList.toggle("hidden", name !== "mon");
+  el("page-set").classList.toggle("hidden", name !== "set");
+  el("tab-mon").classList.toggle("active", name === "mon");
+  el("tab-set").classList.toggle("active", name === "set");
+}
+
+/* ---------- 调试模式（dry-run） ---------- */
+let dbgInitChecked = false; // 页面加载兜底只执行一次
+
+async function loadDebug(init) {
+  const { body } = await j("/api/control/debug");
+  const on = !!body?.dry_run;
+  // 兜底：页面加载时发现遗留的调试模式（上次退出未关掉）→ 自动关闭
+  if (init && on && !dbgInitChecked) {
+    dbgInitChecked = true;
+    await j("/api/control/debug", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    el("dbg-out").textContent = "检测到上次会话遗留的调试模式，已自动关闭。";
+    loadDebug(false);
+    return;
+  }
+  dbgInitChecked = true;
+  el("dbg-toggle").checked = on;
+  const badge = el("dbg-badge");
+  badge.className = on ? "badge warn" : "badge ok";
+  badge.textContent = on ? "已开启（设备操作已禁用）" : "已关闭（设备操作正常）";
+  el("dbg-kvs").innerHTML = kvs([
+    ["状态", on ? "插座通电/断电/pulse 全部转为日志输出" : "实际执行设备操作"],
+    ["影响范围", "手动触发、自动喂食触发、插座调试按钮"],
+    ["自动关闭", "退出/关闭页面时自动关闭，防止忘记"],
+  ]);
+}
+async function dbgToggle() {
+  const on = el("dbg-toggle").checked;
+  const { body } = await j("/api/control/debug", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled: on }),
+  });
+  el("dbg-out").textContent = JSON.stringify(body || {}, null, 1);
+  loadDebug();
+  loadSocket();
+}
+// 退出页面（关标签页/浏览器）→ 强制关闭调试模式
+window.addEventListener("pagehide", () => {
+  if (el("dbg-toggle").checked) navigator.sendBeacon("/api/control/debug/off");
+});
+
+/* ---------- 按键监视 ---------- */
+async function loadKey() {
+  const { body } = await j("/api/key/status");
+  if (!body) return;
+  const b = el("key-badge");
+  if (!body.daemon_running) { b.className = "badge bad"; b.textContent = "守护未运行"; }
+  else if (body.pressed) { b.className = "badge warn"; b.textContent = "按住中"; }
+  else { b.className = "badge ok"; b.textContent = "空闲"; }
+  const sec = (body.pressed_for_ms || 0) / 1000;
+  el("key-bar").style.width = Math.min(100, sec / 5 * 100) + "%";
+  el("key-bar").classList.toggle("hot", sec >= 4.5);
+  el("key-bar-txt").textContent = body.pressed
+    ? "按住 " + sec.toFixed(1) + "s / 5s 触发清空配网"
+    : "长按 User Key 5s → 清空 wlan 配网，进入 AP 配置模式";
+  const cd = body.cooldown_left_ms || 0;
+  el("key-kvs").innerHTML = kvs([
+    ["按键", "User Key（/dev/input/event0）"],
+    ["长按触发", "5 秒 → 清空配网 → AP 配置模式（licheervnano 热点 + 80 端口配置页）"],
+    ["冷却", cd > 0 ? "冷却中 " + (cd / 1000).toFixed(0) + "s（触发后 60s 内不重复）" : "就绪"],
+    ["上次清空", body.last_wipe_ms ? new Date(body.last_wipe_ms).toLocaleString("zh-CN", { hour12: false }) : "从未"],
+  ]);
+  el("key-history").innerHTML = (body.history || []).slice().reverse().map(h => {
+    const tag = h.type === "press" ? "按下" : h.type === "release" ? "释放" : h.type === "wipe" ? "清空触发" : "冷却拦截";
+    const cls = h.type === "wipe" ? "err" : h.type === "cooldown" ? "warn" : "";
+    return `<span class="det ${cls}">${tag} ${h.ts}${h.dur_ms != null ? "（" + (h.dur_ms / 1000).toFixed(1) + "s）" : ""}</span>`;
+  }).join("") || `<span class="muted">暂无事件</span>`;
+}
+setInterval(loadKey, 500);
+
+/* ---------- 参数配置 ---------- */
+function fillConfig(ctl) {
+  el("cfg-quota").value = ctl.quota;
+  el("cfg-socksec").value = ctl.socket_seconds;
+  el("cfg-keepvideo").checked = !!ctl.keep_video_on_pause;
+  const hours = ctl.refresh_hours || (ctl.refresh_hour != null ? [ctl.refresh_hour] : [6]);
+  cfgHours = new Set(hours.filter(h => Number.isInteger(h) && h >= 0 && h <= 23));
+  if (cfgHours.size === 0) cfgHours.add(6);
+  renderHours();
+  el("cfg-kvs").innerHTML = kvs([
+    ["说明", "保存后立即生效并持久化（重启不丢失）"],
+    ["刷新规则", ctl.next_refresh || "-"],
+  ]);
+}
+
+function renderHours() {
+  const wrap = el("cfg-hours");
+  wrap.innerHTML = "";
+  for (let h = 0; h < 24; h++) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "hour" + (cfgHours.has(h) ? " on" : "");
+    b.textContent = String(h).padStart(2, "0");
+    b.title = h + " 点";
+    b.onclick = () => toggleHour(h);
+    wrap.appendChild(b);
+  }
+}
+
+function toggleHour(h) {
+  if (cfgHours.has(h)) {
+    if (cfgHours.size === 1) {
+      el("cfg-out").textContent = "至少保留一个刷新时刻";
+      return;
+    }
+    cfgHours.delete(h);
+  } else {
+    cfgHours.add(h);
+  }
+  renderHours();
+}
+async function cfgSave(ev) {
+  ev.preventDefault();
+  const out = el("cfg-out");
+  out.textContent = "保存中…";
+  const { body } = await j("/api/control/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      quota: Number(el("cfg-quota").value),
+      socket_seconds: Number(el("cfg-socksec").value),
+      refresh_hours: [...cfgHours].sort((a, b) => a - b),
+      keep_video_on_pause: el("cfg-keepvideo").checked,
+    }),
+  });
+  if (body?.ok) {
+    el("cfg-ts").textContent = fmt(Date.now());
+    out.textContent = "保存成功 ✓";
+    out.className = "out oktext";
+  } else {
+    out.textContent = "保存失败：" + (body?.error || JSON.stringify(body || {}));
+    out.className = "out err";
+  }
+  loadSocket();
+}
+
+/* ---------- 视觉（常开） ---------- */
+async function visFullscreen() {
+  const card = el("vis-card");
+  const hint = el("vis-ws");
+  if (document.fullscreenElement) {
+    await document.exitFullscreen();
+    if (screen.orientation?.unlock) screen.orientation.unlock();
+  } else {
+    try {
+      await card.requestFullscreen();
+      // 移动端横屏适配：优先锁定横屏（Android Chrome 全屏下支持）
+      try {
+        if (screen.orientation?.lock) await screen.orientation.lock("landscape");
+      } catch (_) {
+        // iOS Safari 等不支持 orientation.lock → 提示手动旋转
+        if (window.innerHeight > window.innerWidth) {
+          hint.textContent = "建议旋转为横屏观看";
+          setTimeout(() => { if (!document.fullscreenElement) hint.textContent = ""; }, 3000);
+        }
+      }
+    } catch (_) {
+      hint.textContent = "全屏不可用（浏览器限制）";
+    }
+  }
+}
+document.addEventListener("fullscreenchange", () => {
+  // 全屏/退出后画布尺寸变化，下一帧 WS 消息会自动按新尺寸重绘
+});
+
+async function visRefresh() {
+  const { body } = await j("/api/vision/meta");
+  if (!body) return;
+  const badge = el("vis-badge");
+  visStale = !!body.stale;
+  if (body.debug) { badge.className = "badge warn"; badge.textContent = "调试模式"; }
+  else if (body.available && body.stale) { badge.className = "badge warn"; badge.textContent = "在线（画面停滞）"; }
+  else if (body.available) { badge.className = "badge ok"; badge.textContent = "在线"; }
+  else { badge.className = "badge bad"; badge.textContent = "离线（visiond 未运行）"; }
+  if (!visWs && body.available && !body.stale) visConnect();
+}
+
+const IS_MOBILE = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);   // 全局: 移动端降载
+
+function visConnect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  visWs = new WebSocket(`${proto}://${location.host}/api/vision/ws`);
+  visWs.binaryType = "arraybuffer";
+  // WS 只发检测数据; 画面走 HTTP 轮询 (服务端 YUYV→JPEG 按需转码 + 缓存)
+  const DET_GAP = IS_MOBILE ? 800 : 300;     // 检测列表节流
+  let lastDet = 0, lastDets = [];
+  visWs.onmessage = (ev) => {
+    try {
+      const d = JSON.parse(ev.data);                 // 检测数据
+      lastDets = d.detections || [];
+      visDraw(lastDets);
+      const now = performance.now();
+      if (now - lastDet >= DET_GAP) {
+        lastDet = now;
+        el("vis-dets").innerHTML = lastDets.map(dt =>
+          `<span class="det"><span class="cls">${dt.class}</span> ${(dt.score * 100).toFixed(0)}% ` +
+          `<span class="sc">[${dt.bbox.map(v => v.toFixed(2)).join(",")}]</span></span>`).join("")
+          || `<span class="muted">无检测目标</span>`;
+      }
+    } catch (_) {}
+  };
+  visWs.onclose = () => {
+    visWs = null;
+    el("vis-ws").textContent = "WS 已断开，重连中…";
+    setTimeout(visRefresh, 2000);
+  };
+}
+let _pollBusy = false, _lastBlobUrl = null;
+async function pollFrame() {
+  if (_pollBusy || visStale) return;   // 陈旧帧不再拉取, 保留最后一帧并显示“画面停滞”
+  _pollBusy = true;
+  try {
+    const r = await fetch("/api/vision/frame");
+    if (r.ok) {
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      el("vis-frame").src = url;
+      if (_lastBlobUrl) URL.revokeObjectURL(_lastBlobUrl);
+      _lastBlobUrl = url;
+    }
+  } catch (_) {}
+  _pollBusy = false;
+}
+// 画面轮询: 移动端 5fps, 桌面 10fps (服务端同帧转码缓存, 多端共享)
+setInterval(pollFrame, IS_MOBILE ? 200 : 100);
+/* 视频帧由 WS 二进制推送 */
+/* 标注框叠加: 检测坐标在模型空间 640x360 = 实际帧的居中裁剪区 (如 640x480 裁掉上下各 60 行),
+   x 同宽直映, y 需加裁剪偏移后按帧高缩放 */
+function visDraw(dets) {
+  const cv = el("vis-canvas"), img = el("vis-frame");
+  if (!cv || !img || !img.naturalWidth) return;
+  const dpr = IS_MOBILE ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (!w || !h) return;
+  if (cv.width !== Math.round(w * dpr)) cv.width = Math.round(w * dpr);
+  if (cv.height !== Math.round(h * dpr)) cv.height = Math.round(h * dpr);
+  const c = cv.getContext("2d");
+  c.clearRect(0, 0, cv.width, cv.height);
+  if (!dets || !dets.length) return;
+  const nh = img.naturalHeight;
+  const cropTop = nh > 360 ? Math.round((nh - 360) / 2) : 0;
+  const sx = cv.width / 640;                   // 模型 x → 画布
+  const sy = cv.height / nh;                   // 帧 y (含裁剪偏移) → 画布
+  c.lineWidth = Math.max(1.5, 2 * dpr);
+  c.font = `12px system-ui, sans-serif`;
+  for (const d of dets) {
+    const [x1, y1, x2, y2] = d.bbox;
+    const bx = x1 * sx, by = (y1 + cropTop) * sy;
+    const bw = (x2 - x1) * sx, bh = (y2 - y1) * sy;
+    c.strokeStyle = "#6ea8fe";
+    c.strokeRect(bx, by, bw, bh);
+    const label = `${d.class} ${(d.score * 100).toFixed(0)}%`;
+    const tw = c.measureText(label).width;
+    const ly = by - 15 * dpr;
+    c.fillStyle = "rgba(24,42,82,.85)";
+    c.fillRect(bx, ly, tw + 10 * dpr, 15 * dpr);
+    c.fillStyle = "#fff";
+    c.fillText(label, bx + 5 * dpr, ly + 11.5 * dpr);
+  }
+}
+
+/* ---------- 插座管理 + 自动控制 ---------- */
+let skDeviceId = "";
+let skBusy = false;
+
+async function loadSocket() {
+  if (skBusy) return;
+  skBusy = true;
+  try { await loadSocketInner(); } finally { skBusy = false; }
+}
+
+async function loadSocketInner() {
+  const [h, d, c, dbg] = await Promise.all([
+    j("/api/ewelink/health"), j("/api/ewelink/devices"), j("/api/control/status"), j("/api/control/debug"),
+  ]);
+  const badge = el("sk-badge");
+  if (h.body?.daemon_running) { badge.className = "badge ok"; badge.textContent = "daemon 运行中"; }
+  else { badge.className = "badge bad"; badge.textContent = "daemon 未运行"; }
+
+  const ctl = c.body || {};
+  skDeviceId = ctl.socket_id || (d.body?.deviceids || [])[0] || "";
+  const dev = (d.body?.devices || []).find(x => x.deviceid === skDeviceId);
+  const snap = dev?.status?.snapshot || {};
+
+  // 通道状态
+  const pmap = {};
+  (snap.pulses || []).forEach(p => pmap[p.outlet] = p);
+  const ch = (snap.switches || []).map(s => {
+    const on = s.switch === "on";
+    const p = pmap[s.outlet];
+    return `<span class="det">通道${s.outlet} <span class="${on ? "oktext" : "err"}">●${on ? "ON" : "OFF"}</span>` +
+      (p && p.pulse === "on" ? ` <span class="muted">pulse ${(p.width / 1000).toFixed(0)}s</span>` : "") +
+      `</span>`;
+  }).join("") || `<span class="muted">无设备状态</span>`;
+  el("sk-ch").innerHTML = ch;
+
+  el("sk-kvs").innerHTML = kvs([
+    ["设备", skDeviceId || "-"],
+    ["状态来源", dev?.status?.mode || "-"],
+    ["控制插位", ctl.socket_outlet || "all"],
+    ["自动通电", ctl.socket_seconds + " s"],
+    ["设备缓存", h.body?.cached_devices + " 个"],
+    ["daemon socket", h.body?.socket || "-"],
+    ["调试模式", dbg.body?.dry_run ? "开启（设备操作转日志）" : "关闭（实际执行）"],
+  ]);
+
+  // 自动控制
+  const ctlBadge = el("ctl-badge");
+  if (ctl.enabled) { ctlBadge.className = "badge ok"; ctlBadge.textContent = "已启用"; }
+  else { ctlBadge.className = "badge bad"; ctlBadge.textContent = "已停用"; }
+  const last = ctl.last_trigger_ms ? new Date(ctl.last_trigger_ms).toLocaleString("zh-CN", { hour12: false }) : "-";
+  el("ctl-kvs").innerHTML = kvs([
+    ["触发条件", ctl.dog_rule || `窗口 ${ctl.dog_seconds}s 内狗均值 > 65% 且无猫`],
+    ["每日配额", `${ctl.used_today} / ${ctl.quota}（剩余 ${ctl.quota_left}）`],
+    ["推理", ctl.inference_paused ? "已暂停（配额用尽）" : (ctl.quota_left === 0 ? "运行中（调试强制）" : "运行中")],
+    ["视频流", ctl.inference_paused ? (ctl.keep_video_on_pause ? "保留（仅停推理）" : "已关闭（摄像头停止）") : (ctl.quota_left === 0 ? "保留（调试强制）" : "实时")],
+    ["刷新", ctl.next_refresh || "-"],
+    ["上次触发", `${last}${ctl.last_action ? "：" + ctl.last_action : ""}`],
+  ]);
+  fillConfig(ctl);
+}
+
+async function daemonStart() {
+  const { body } = await j("/api/ewelink/daemon_start", { method: "POST" });
+  el("sk-out").textContent = JSON.stringify(body || {}, null, 1);
+  loadSocket();
+}
+
+async function skPulse(sec) {
+  const ms = sec * 1000;
+  const out = el("sk-out");
+  if (!skDeviceId) { out.textContent = "无设备 deviceid（未配置 WEB_CTRL_SOCKET_ID）"; return; }
+  out.textContent = `触发中：${skDeviceId} 全部插位通电 ${sec}s …`;
+  const { body } = await j("/api/ewelink/pulse", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ deviceid: skDeviceId, ms }),
+  });
+  out.textContent = JSON.stringify(body || {}, null, 1);
+  loadSocket();
+}
+
+async function ctlTest() {
+  const out = el("sk-out");
+  out.textContent = "执行链路测试（照片 → 邮件 → 插座通电）…";
+  const { body } = await j("/api/control/test", { method: "POST" });
+  out.textContent = JSON.stringify(body || {}, null, 1);
+  loadSocket();
+}
+
+async function ctlReset() {
+  const { body } = await j("/api/control/reset", { method: "POST" });
+  el("sk-out").textContent = JSON.stringify(body || {}, null, 1);
+  loadSocket();
+}
+
+/* ---------- 总刷新 ---------- */
+async function refreshAll() {
+  await Promise.all([loadSystem(), loadNetwork(), loadSocket(), loadDebug(), visRefresh()]);
+}
+setInterval(() => { loadSystem(); loadNetwork(); }, 5000);
+setInterval(loadSocket, 15000);
+// 视觉离线自愈：未连接时每 5s 重试 meta，恢复后自动建流（在线时空转）
+setInterval(() => { if (!visWs) visRefresh(); }, 5000);
+
+loadDebug(true);
+refreshAll();
+</script>
+</body>
+</html>

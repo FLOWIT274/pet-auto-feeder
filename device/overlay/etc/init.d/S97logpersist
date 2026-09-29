@@ -1,0 +1,27 @@
+#!/bin/sh
+# S97logpersist — 持久化崩溃日志自启
+# 把易失的 /var/log（tmpfs）镜像到 /mnt/data/log，供死机后定因。
+# 重跑：/etc/init.d/S97logpersist start|stop|status
+
+SCRIPT=/usr/bin/crashlog.sh
+
+case "$1" in
+	start)
+		if [ -x "$SCRIPT" ]; then
+			"$SCRIPT" start
+		else
+			echo "crashlog: $SCRIPT 不存在，跳过"
+			exit 1
+		fi
+		;;
+	stop)
+		[ -x "$SCRIPT" ] && "$SCRIPT" stop
+		;;
+	status)
+		[ -x "$SCRIPT" ] && "$SCRIPT" status
+		;;
+	*)
+		echo "用法: $0 start|stop|status"
+		exit 1
+		;;
+esac

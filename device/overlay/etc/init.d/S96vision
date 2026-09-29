@@ -1,0 +1,174 @@
+#! /bin/sh
+# S96vision — 板端摄像头直采推理服务自启 (YUYV/MJPEG + JPU 硬解)
+# 依赖: OTG host 模式(/boot/usb.host) + S30wifi; 等 /dev/video0 就绪后拉起
+# 重跑: /etc/init.d/S96vision start|stop|restart
+
+DAEMON=/mnt/data/tpu/vdec_stream_v4l2
+MODEL=/mnt/data/tpu/models/yolov8n_det_pet_person_384_640_INT8_cv181x.cvimodel
+PIDFILE=/var/run/vdec_stream_v4l2.pid
+WATCH_PIDFILE=/var/run/vdec_watch.pid
+LOG=/tmp/vdec_v4l2.log   # tmpfs 内存日志, 避免 10fps 持续写 SD 卡
+
+# webd 保活 (S96vision 兼管 webd: 崩溃/挂死自动拉起; 手动 stop 后不再拉起)
+WEB_PIDFILE=/var/run/webd.pid
+WEB_MANAGED_OFF=/var/run/webd.managed-off
+WEB_HEALTH_URL=http://127.0.0.1:8080/api/health
+
+# 常驻 watchdog: 每 5s 检查——
+#  1. 有摄像头节点但视觉进程已死 → 自动重启
+#  2. 摄像头缺失 ≥60s → 软复位 DWC2 控制器 (unbind/bind, 免整机重启)
+#  3. 软复位后仍缺失 ≥360s → 重启整机 (最后兜底)
+#  4. vdec 进程活着但 SHM 心跳冻结 (sequence 不递增) ≥20s → 强杀 + DWC2 复位 + 重启
+#  5. vdec 进程活着但 SHM 缺失 ≥30s → 同上 (启动异常兜底)
+#  6. webd PID/HTTP 不可用 → 自动重启 (除非 webd.managed-off 标记存在)
+# (vdec_stream 在摄像头 ENODEV >2s 时自行退出; 重连后由这里拉起)
+WATCH_LOG=/tmp/vdec_watch.log
+start_watch() {
+	[ -f "$WATCH_PIDFILE" ] && kill "$(cat "$WATCH_PIDFILE")" 2>/dev/null
+	(
+		no_cam=0
+		reset_done=0
+		last_seq=""
+		stall_s=0
+		shm_miss_s=0
+		while true; do
+			sleep 5
+
+			# ---- webd 保活 (仅当未被手动停止) ----
+			if [ ! -f "$WEB_MANAGED_OFF" ]; then
+				webd_ok=0
+				if [ -f "$WEB_PIDFILE" ] && kill -0 "$(cat "$WEB_PIDFILE")" 2>/dev/null; then
+					if wget -q -O /dev/null "$WEB_HEALTH_URL" 2>/dev/null; then
+						webd_ok=1
+					fi
+				fi
+				if [ "$webd_ok" -eq 0 ]; then
+					echo "$(date) [watch] webd 不可用 (pid/HTTP), 重启"
+					[ -f "$WEB_PIDFILE" ] && kill -9 "$(cat "$WEB_PIDFILE")" 2>/dev/null
+					rm -f "$WEB_PIDFILE"
+					/etc/init.d/S90webd start >>"$WATCH_LOG" 2>&1
+				fi
+			fi
+
+			# ---- 配额用尽: 视觉链路由 webd 的 pause 标志控制, watchdog 不干预 ----
+			if [ -f /tmp/vdec_pause ]; then
+				continue
+			fi
+
+			# ---- 视觉链路 ----
+			if ls /dev/video[0-3] >/dev/null 2>&1; then
+				no_cam=0
+				reset_done=0
+				if [ ! -f "$PIDFILE" ] || ! kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+					start_daemon
+				fi
+
+				# vdec 卡死心跳: SHM sequence 每帧递增; 冻结/缺失判卡死
+				pid_alive=0
+				if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+					pid_alive=1
+				fi
+				if [ "$pid_alive" -eq 1 ]; then
+					seq=$(od -An -tu8 -j 0 -N 8 /dev/shm/visiond_detect 2>/dev/null | tr -d ' \n')
+					if [ -n "$seq" ]; then
+						shm_miss_s=0
+						if [ -n "$last_seq" ] && [ "$seq" = "$last_seq" ]; then
+							stall_s=$((stall_s + 5))
+						else
+							stall_s=0
+						fi
+						last_seq=$seq
+					else
+						shm_miss_s=$((shm_miss_s + 5))
+					fi
+				fi
+				if [ "$pid_alive" -eq 1 ] && { [ "$stall_s" -ge 20 ] || [ "$shm_miss_s" -ge 30 ]; }; then
+					echo "$(date) [watch] vdec 心跳冻结 (stall=${stall_s}s miss=${shm_miss_s}s), 强杀+DWC2复位+重启"
+					kill -9 "$(cat "$PIDFILE")" 2>/dev/null
+					rm -f "$PIDFILE"
+					echo 4340000.usb > /sys/bus/platform/drivers/dwc2/unbind 2>/dev/null
+					sleep 2
+					echo 4340000.usb > /sys/bus/platform/drivers/dwc2/bind 2>/dev/null
+					start_daemon
+					stall_s=0; shm_miss_s=0; last_seq=""
+				fi
+			else
+				no_cam=$((no_cam + 5))
+				if [ "$no_cam" -ge 60 ] && [ "$reset_done" -eq 0 ]; then
+					echo "$(date) [watch] 摄像头缺失 ${no_cam}s, 软复位 DWC2"
+					echo 4340000.usb > /sys/bus/platform/drivers/dwc2/unbind 2>/dev/null
+					sleep 2
+					echo 4340000.usb > /sys/bus/platform/drivers/dwc2/bind 2>/dev/null
+					reset_done=1
+				elif [ "$no_cam" -ge 360 ] && [ "$reset_done" -eq 1 ]; then
+					echo "$(date) [watch] 摄像头缺失 ${no_cam}s 且软复位无效, 重启整机"
+					reboot
+				fi
+			fi
+		done
+	) >>"$WATCH_LOG" 2>&1 &
+	echo $! >"$WATCH_PIDFILE"
+}
+
+stop_watch() {
+	if [ -f "$WATCH_PIDFILE" ]; then
+		kill "$(cat "$WATCH_PIDFILE")" 2>/dev/null
+		rm -f "$WATCH_PIDFILE"
+	fi
+}
+
+# 仅拉起视觉守护(不管理 watchdog); watchdog 内部也调用这里, 避免自杀
+start_daemon() {
+	if [ ! -x "$DAEMON" ]; then
+		echo "vision: $DAEMON 不存在，跳过"
+		return 1
+	fi
+	if ! ls /dev/video[0-3] >/dev/null 2>&1; then
+		echo "vision: 无摄像头节点，跳过（OTG host 摄像头未接?）"
+		return 1
+	fi
+	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+		return 0
+	fi
+	# 等摄像头节点就绪(最多 20s; uvc 枚举可能慢)
+	i=0
+	while [ $i -lt 40 ] && ! (ls /dev/video[0-3] >/dev/null 2>&1); do
+		sleep 0.5; i=$((i + 1))
+	done
+	cd /mnt/data/tpu
+	: >"$LOG"   # 启动截断旧日志, 防 tmpfs 长期累积
+	LD_LIBRARY_PATH=/mnt/data/tpu/libv2:/mnt/data/tpu/lib:/mnt/data/tpu \
+		"$DAEMON" "$MODEL" /dev/video0 0.5 >>"$LOG" 2>&1 &
+	echo $! >"$PIDFILE"
+	echo "vision: 启动 (pid $!)"
+	# 健康探测(≤10s): busybox ps 无 -p, 用 kill -0 判存活
+	sleep 5
+	if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+		echo "vision: 进程存活"
+	else
+		echo "vision: 进程退出，检查 $LOG"
+	fi
+	return 0
+}
+
+start() {
+	start_daemon
+	start_watch
+}
+
+stop() {
+	stop_watch
+	if [ -f "$PIDFILE" ]; then
+		kill "$(cat "$PIDFILE")" 2>/dev/null || kill -9 "$(cat "$PIDFILE")" 2>/dev/null
+		rm -f "$PIDFILE"
+	fi
+	# 不用 ps/grep 兜底: 命令行含 vdec_stream_v4l2 的部署 shell 会被误杀
+	echo "vision: 已停止"
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart) stop; sleep 0.3; start ;;
+	*) echo "用法: $0 start|stop|restart"; exit 1 ;;
+esac

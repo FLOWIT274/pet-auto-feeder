@@ -1,0 +1,255 @@
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S25wifimod b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S25wifimod
+index b287dd4a0..ecc164906 100755
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S25wifimod
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S25wifimod
+@@ -7,7 +7,7 @@ then
+ 	cd /mnt/system/ko/
+ 	insmod cfg80211.ko
+ 	insmod 3rd/aic8800_bsp.ko
+-	insmod 3rd/aic8800_fdrv.ko
++	insmod 3rd/aic8800_fdrv.ko aicwf_dbg_level=1
+ 	insmod 3rd/8733bs.ko
+ 	echo "OK"
+ 	exit 0
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S30wifi b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S30wifi
+index 9c4df0f22..55314b593 100755
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S30wifi
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S30wifi
+@@ -1,6 +1,7 @@
+ #!/bin/sh
+ 
+ . /etc/profile
++. /etc/wifi_fallback.sh
+ 
+ gen_hostapd_conf() {
+ 	ssid="${1}"
+@@ -36,113 +37,147 @@ gen_udhcpd_conf() {
+         echo "option lease 864000"
+ }
+ 
+-start() {
+-	if [ -e /boot/wifi.sta ]
++start_ap() {
++	echo "wifi mode: ap"
++	if [ -e /boot/hostapd.conf ]
+ 	then
+-		echo "wifi mode: sta"
+-		if [ -e /boot/wpa_supplicant.conf ]
++		cp /boot/hostapd.conf /etc/hostapd.conf
++	else
++		id2=$(printf "%d" 0x$(sha512sum /device_key_legacy | head -c 2))
++		id3=$(printf "%d" 0x$(sha512sum /device_key_legacy | head -c 4 | tail -c 2))
++		if [ "$id2" = "$id3" ]
+ 		then
+-			cp /boot/wpa_supplicant.conf /etc/wpa_supplicant.conf
+-		else
+-			ssid=""
+-			pass=""
+-			if [ -e /boot/wifi.ssid ]
+-			then
+-				echo -n "ssid: "
+-				cat /boot/wifi.ssid
+-				ssid=`cat /boot/wifi.ssid`
+-			fi
+-			if [ -e /boot/wifi.pass ]
+-			then
+-				echo -n "wifi.pass: "
+-				cat /boot/wifi.pass
+-				pass=`cat /boot/wifi.pass`
+-			fi
+-			if [ ! -z "${ssid}${pass}" ]
+-			then
+-				echo "ctrl_interface=/var/run/wpa_supplicant" > /etc/wpa_supplicant.conf
+-				wpa_passphrase "$ssid" "$pass" >> /etc/wpa_supplicant.conf
+-			fi
++			id2=$((id2 + 1))
++		fi
++		if [ "$id2" -ge 255 ]
++		then
++			id2=253
+ 		fi
+-		wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf
+-		if [ ! -e /boot/wifi.nodhcp ]
++		if [ "$id3" -ge 255 ]
+ 		then
+-			(udhcpc -i wlan0 -t 10 -T 1 -A 5 -b -p /run/udhcpc.wlan0.pid) &
++			id3=254
+ 		fi
+-	elif [ -e /boot/wifi.ap ]
++		ssid="licheervnano-${id2}${id3}"
++		pass="00000000"
++		if [ -e /boot/wifi.ssid ]
++		then
++			echo -n "ssid: "
++			cat /boot/wifi.ssid
++			ssid=`cat /boot/wifi.ssid`
++		fi
++		# AP 密码固定 00000000，不从 wifi.pass 读取（wifi.pass 是 STA 连接凭证，非 AP 接入密钥）
++		gen_hostapd_conf "$ssid" "$pass" > /etc/hostapd.conf
++	fi
++	if [ -e /boot/wifi.ipv4_prefix ]
+ 	then
+-		echo "wifi mode: ap"
+-		if [ -e /boot/hostapd.conf ]
++		ipv4_prefix=`cat /boot/wifi.ipv4_prefix`
++	else
++		ipv4_prefix=10.$id3.$id2
++	fi
++	if [ ! -e /etc/udhcpd.wlan0.conf ]
++	then
++		gen_udhcpd_conf wlan0 "${ipv4_prefix}"  > /etc/udhcpd.wlan0.conf
++	fi
++	ifconfig wlan0 up
++	ip route del default || true
++	# routes=$(ip route show | grep 'dev wlan0' | awk '{print $1}')
++	# for route in $routes; do
++	# 	ip route del $route dev wlan0
++	# 	echo "Deleted route $route dev wlan0"
++	# done
++	ip add flush dev wlan0
++	ip addr add $ipv4_prefix.1/24 dev wlan0
++	hostapd -B -i wlan0 /etc/hostapd.conf
++	udhcpd -S /etc/udhcpd.wlan0.conf
++	# 配置窗口期：启动 WiFi 配置服务（80 端口）
++	if [ -e /mnt/system/usr/bin/wificfgd ]
++	then
++		/mnt/system/usr/bin/wificfgd &
++	fi
++}
++
++start_sta() {
++	echo "wifi mode: sta"
++	mkdir -p /var/run/wpa_supplicant
++	if [ -e /boot/wpa_supplicant.conf ]
++	then
++		cp /boot/wpa_supplicant.conf /etc/wpa_supplicant.conf
++	else
++		ssid=""
++		pass=""
++		if [ -e /boot/wifi.ssid ]
+ 		then
+-			cp /boot/hostapd.conf /etc/hostapd.conf
+-		else
+-			id2=$(printf "%d" 0x$(sha512sum /device_key_legacy | head -c 2))
+-			id3=$(printf "%d" 0x$(sha512sum /device_key_legacy | head -c 4 | tail -c 2))
+-			if [ "$id2" = "$id3" ]
+-			then
+-				id2=$((id2 + 1))
+-			fi
+-			if [ "$id2" -ge 255 ]
+-			then
+-				id2=253
+-			fi
+-			if [ "$id3" -ge 255 ]
+-			then
+-				id3=254
+-			fi
+-			ssid="licheervnano-${id2}${id3}"
+-			pass="licheervnano"
+-			if [ -e /boot/wifi.ssid ]
+-			then
+-				echo -n "ssid: "
+-				cat /boot/wifi.ssid
+-				ssid=`cat /boot/wifi.ssid`
+-			fi
+-			if [ -e /boot/wifi.pass ]
+-			then
+-				echo -n "wifi.pass: "
+-				cat /boot/wifi.pass
+-				pass=`cat /boot/wifi.pass`
+-			fi
+-			gen_hostapd_conf "$ssid" "$pass" > /etc/hostapd.conf
++			echo -n "ssid: "
++			cat /boot/wifi.ssid
++			ssid=`cat /boot/wifi.ssid`
+ 		fi
+-		if [ -e /boot/wifi.ipv4_prefix ]
++		if [ -e /boot/wifi.pass ]
+ 		then
+-			ipv4_prefix=`cat /boot/wifi.ipv4_prefix`
+-		else
+-			ipv4_prefix=10.$id3.$id2
++			echo -n "wifi.pass: "
++			cat /boot/wifi.pass
++			pass=`cat /boot/wifi.pass`
+ 		fi
+-		if [ ! -e /etc/udhcpd.wlan0.conf ]
++		if [ ! -z "${ssid}${pass}" ]
+ 		then
+-			gen_udhcpd_conf wlan0 "${ipv4_prefix}"  > /etc/udhcpd.wlan0.conf
++			echo "ctrl_interface=/var/run/wpa_supplicant" > /etc/wpa_supplicant.conf
++			wpa_passphrase "$ssid" "$pass" >> /etc/wpa_supplicant.conf
++		else
++			# 无凭证：清残留配置，避免复用旧网络（如已删除的 SSID）误连
++			rm -f /etc/wpa_supplicant.conf
++			echo "wifi: no credentials, skipping STA"
++			return 0
+ 		fi
+-		ifconfig wlan0 up
+-		ip route del default || true
+-		# routes=$(ip route show | grep 'dev wlan0' | awk '{print $1}')
+-		# for route in $routes; do
+-		# 	ip route del $route dev wlan0
+-		# 	echo "Deleted route $route dev wlan0"
+-		# done
+-		ip add flush dev wlan0
+-		ip addr add $ipv4_prefix.1/24 dev wlan0
+-		hostapd -B -i wlan0 /etc/hostapd.conf
+-		udhcpd -S /etc/udhcpd.wlan0.conf
++	fi
++	wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf
++	if [ ! -e /boot/wifi.nodhcp ]
++	then
++		(udhcpc -i wlan0 -t 10 -T 1 -A 5 -b -p /run/udhcpc.wlan0.pid) &
++	fi
++}
++
++start() {
++	if [ -e /boot/wifi.ap ]
++	then
++		start_ap
+ 	elif [ -e /boot/wifi.mon ]
+ 	then
+ 		echo "wifi mode: mon"
+ 		airmon-ng start wlan0
++	else
++		# 默认（无标记或 wifi.sta）：无凭证直接进配置窗口期（首次配置）；
++		# 有凭证先试 STA，扫描窗口内无可用网络则回退 AP
++		if [ ! -e /boot/wifi.ssid ] && [ ! -e /boot/wifi.pass ]
++		then
++			echo "wifi: no credentials, switching to AP"
++			start_ap
++		else
++			start_sta
++			if ! should_fallback
++			then
++				echo "wifi fallback: no network found, switching to AP"
++				stop_wifi_sta
++				start_ap
++			else
++				echo "wifi: network found, staying in STA mode"
++			fi
++		fi
+ 	fi
+ }
+ 
+-stop() {
+-	ps -ef|grep hostapd|grep -v grep|awk '{print $1}'|xargs kill -2 || true
+-	ps -ef|grep "udhcpd -S /etc/udhcpd.wlan0.conf" |grep -v grep|awk '{print $1}'|xargs kill -2 || true
++stop_wifi_sta() {
+ 	killall wpa_supplicant || true
+ 	if [ -e /run/udhcpc.wlan0.pid ]
+ 	then
+ 		kill `cat /run/udhcpc.wlan0.pid` || true
+ 		rm -f /run/udhcpc.wlan0.pid
+ 	fi
++}
++
++stop() {
++	ps -ef|grep hostapd|grep -v grep|awk '{print $1}'|xargs kill -2 || true
++	ps -ef|grep "udhcpd -S /etc/udhcpd.wlan0.conf" |grep -v grep|awk '{print $1}'|xargs kill -2 || true
++	stop_wifi_sta
++	killall wificfgd || true
+ 	if [ -e /var/run/udhcpd.wlan0.pid ]
+ 	then
+ 		kill `cat /var/run/udhcpd.wlan0.pid`  || true
