@@ -1,13 +1,22 @@
 #!/bin/bash
 # build_apk.sh — 手工构建 licheerv-admin APK（无 gradle）
+# 需要 Android SDK（build-tools 33.0.2 + platform android-33）。
+# SDK 路径优先取 config.env 的 ANDROID_SDK，其次环境变量，最后默认 ~/android-sdk。
 set -euo pipefail
-SDK=/home/sbh/android-sdk
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+[ -f "$ROOT/../config.env" ] && . "$ROOT/../config.env"
+SDK="${ANDROID_SDK:-${SDK:-$HOME/android-sdk}}"
 BT=$SDK/build-tools/33.0.2
 AJ=$SDK/platforms/android-33/android.jar
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+if [ ! -d "$BT" ] || [ ! -f "$AJ" ]; then
+    echo "错误: 找不到 Android SDK 组件: $SDK" >&2
+    echo "      需要 build-tools/33.0.2 与 platforms/android-33/android.jar" >&2
+    echo "      请设置 ANDROID_SDK=/path/to/android-sdk（或写进 config.env）" >&2
+    exit 1
+fi
 APP=$ROOT/app
 OUT=$ROOT/build
-KS=$ROOT/debug.keystore
+KS=$ROOT/debug.keystore   # 不存在时由下方 keytool 自动生成（不入库）
 
 rm -rf "$OUT"/classes "$OUT"/dex "$OUT"/compiled.zip "$OUT"/base.apk "$OUT"/aligned.apk
 mkdir -p "$OUT"/classes "$OUT"/dex
