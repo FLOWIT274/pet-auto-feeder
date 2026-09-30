@@ -17,6 +17,11 @@ TRIGGER_SEC = 5.0
 COOLDOWN_SEC = 60.0
 LOG = "/var/log/keywipe.log"
 STATE = "/tmp/keywipe_state.json"
+# 演练模式：存在此标记文件时，长按只记录"本应删除什么"，不真删、不重启 WiFi。
+# 用于验证按键检测/阈值链路而又不想让板子掉线进 AP：
+#   touch /tmp/keywipe_dryrun   # 开启（立即生效，无需重启守护）
+#   rm    /tmp/keywipe_dryrun   # 关闭
+DRYRUN_MARK = "/tmp/keywipe_dryrun"
 WIPE_FILES = [
     "/boot/wifi.ssid",
     "/boot/wifi.pass",
@@ -56,6 +61,16 @@ def hist(typ, dur_ms=None):
     state["history"] = state["history"][-30:]  # 最多 30 条
 
 def do_wipe(pressed_for_ms):
+    if os.path.exists(DRYRUN_MARK):
+        # 演练模式：完整走完检测与阈值判定，但不动任何文件、不重启 WiFi
+        would = [os.path.basename(f) for f in WIPE_FILES if os.path.exists(f)]
+        log(f"[演练] 长按 {pressed_for_ms / 1000.0:.1f}s 达阈值：本应删除 "
+            + (", ".join(would) if would else "（无配网文件）")
+            + "，并重启 S30wifi 进 AP 模式；演练模式未实际执行")
+        hist("dryrun", pressed_for_ms)
+        state["last_wipe_ms"] = int(time.time() * 1000)
+        write_state()
+        return
     removed = []
     for f in WIPE_FILES:
         try:
