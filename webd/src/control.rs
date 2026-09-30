@@ -178,9 +178,22 @@ impl CtrlState {
         day * (hours.len() as i64) + n
     }
 
+    /// 系统时钟是否可信。上电时 RTC 默认 1970，NTP 同步前日历无意义。
+    /// 此时若照常刷新，会：
+    ///   1) 误响一声配额提醒（NTP 再同步一次又响一声 → 开机固定响两下）；
+    ///   2) 把 used_today 清零 —— 等于"重板子就能绕过每日限额"。
+    fn clock_valid(unix: i64) -> bool {
+        const Y2020: i64 = 1_577_836_800; // 2020-01-01 00:00:00 UTC
+        unix >= Y2020
+    }
+
     /// 配额刷新检查（每次轮询调用，便宜）。返回 true = 本次发生了配额刷新。
     pub fn refresh_if_due(&mut self, tz: i64) -> bool {
         let unix = unix_now();
+        // 时钟未同步：不刷新、不清零、不响；等 NTP 校准后再比对真实槽位
+        if !Self::clock_valid(unix) {
+            return false;
+        }
         let qd = Self::quota_slot_index(unix, tz, &self.refresh_hours);
         if qd != self.last_quota_day {
             self.last_quota_day = qd;
@@ -384,7 +397,8 @@ pub async fn run(
     }
 }
 
-/// 配额刷新提醒：调用 buzzer_beep.sh 连续响两下（A19/GPIO499 低电平使能）
+/// 配额刷新提醒：调用 buzzer_beep.sh 连续响两下
+/// （A19/GPIO499 接**高电平触发**模块：高=响，低=静音）
 async fn beep_quota_refresh() {
     let bin = Path::new("/usr/bin/buzzer_beep.sh");
     if !bin.exists() {
@@ -668,6 +682,15 @@ mod tests {
             st.refresh_if_due(TZ);
             assert_eq!(st.used_today, 2, "同槽内不重置");
         }
+    }
+
+    #[test]
+    fn clock_invalid_blocks_refresh() {
+        // RTC 上电默认 1970：此时槽位是假值，若照常刷新会误响一声并把 used_today 清零
+        assert!(!CtrlState::clock_valid(0), "1970 未同步");
+        assert!(!CtrlState::clock_valid(1_577_836_799), "2019-12-31 23:59:59 仍不可信");
+        assert!(CtrlState::clock_valid(1_577_836_800), "2020-01-01 起可信");
+        assert!(CtrlState::clock_valid(unix_now()), "当前真实时钟可信");
     }
 
     #[test]

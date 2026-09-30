@@ -290,5 +290,38 @@ $HOME/toolchains/riscv64-linux-musl-x86_64/bin/riscv64-unknown-linux-musl-g++ -O
   `tokio::spawn` 调 `buzzer_beep.sh 2`（异步不阻塞，5s 超时）；**无 HTTP/UI 手动触发入口**，手动测试直接 SSH 跑脚本。
 - **验证**：桩测试确认调用序列为 `0x3 → 低 → 高 → 低 → 高 → 低`（正好 2 个高脉冲），
   中断路径末态为低，计时 2 下=0.561s / 3 下=0.965s。
-  **未做真机听感验证**（改动时板子失联）——恢复后应实测确认"只响两下、平时无声"。
+  真机寄存器验证：`buzzer_beep.sh 2` 退出 0，`DATA` bit19 正确产生 高→低 脉冲并回落静音。
+  **尚无听感确认**（现场未接蜂鸣器模块）——接上后应实测"只响两下、平时无声"。
 - **部署**：已加入 `deploy/deploy.sh` 拷贝清单 + `chmod 755`。
+
+### 上电静音的根治（u-boot 层，2026-09-30 真机刷入并验证）
+- **为什么用户态不够**：实测该 pad **复位默认有内部弱上拉 → 高**；原厂 u-boot 又把它配成
+  `UART1_RTS`，UART MCR 复位值=0（RTS 去断言）→ 引脚**高**。所以从**上电**到 `S20buzzer`
+  执行（实测 `uptime≈4.85s`）之间高触发蜂鸣器会持续响；用户态最早只能到 rcS，覆盖不了这段。
+- **"在 u-boot 里写 UART1 MCR 让 UART 自己拉低"是死路**：实测写 `0x04150010=0x2` 后 pad 确实变低，
+  但 **内核 probe 8250 时会把 MCR 写回 0**（`unbind`/`bind` 可复现）→ 只能维持几秒。
+- **有效做法**：u-boot 直接把 A19 改成 `XGPIOA_19` 输出低（先写电平位、再设方向，避免毛刺），
+  见 `patches/01-board-bringup.patch` 的 `cvi_board_init.c`。
+- **刷写位置**：u-boot 在 `fip.bin` 里（魔数 `CVBL01`），而 `fip.bin` **是 FAT 引导分区中的文件**
+  （实测文件内容起点 = 裸卡扇区 169；p1 起始扇区=1，BootROM 走 FAT 读取）。
+  **`fip.bin` 没有 A/B 兜底**（`boot_a.sd`/`boot_b.sd` 只是内核 FIT），官方 OTA 包也不含它 →
+  刷坏必须取 SD 卡恢复。刷法：`dd if=新fip.bin of=/boot/fip.bin bs=4096 conv=notrunc`（保持簇链），
+  再 `sync` + 重启；用 `dd` 而非 `cp` 可避免 O_TRUNC 触发簇重分配。
+- **可复现的验证方法**：把 `buzzer_beep.sh` 整个移走并停用 `S20buzzer`，使**任何用户态都无法改 A19**，
+  重启后读寄存器 —— 得 `FMUX=0x3`、`DATA` bit19=0、`DIR` bit19=1，即证明由 u-boot 独立完成。
+  同法在刷机前测得 `FMUX=0x4`。
+  ⚠️ 只停 `S20buzzer` 不够：**webd 开机也会调蜂鸣脚本**，会把 pinmux 改成 0x3 而冒领功劳。
+- **残留窗口**：上电到 u-boot 执行 `board_init` 之间约 1~2 秒，pad 仍是复位默认（弱上拉=高）。
+  要连这段也消掉，需在 **A19 与 GND 间加 10kΩ 下拉**（弱上拉压得过；但 u-boot 之后是推挽驱动，
+  故下拉必须配合上面的 u-boot 改动才完整）。
+
+### webd 开机误响（2026-09-30 修复）
+- **现象**：每次开机蜂鸣器响**两下**（与"上电长响"是两个独立问题，容易混淆）。
+- **原因**：上电 RTC=1970，`quota_slot_index()` 基于假时钟算出假槽位 → 被判为"配额刷新" →
+  蜂鸣一次并**把 `used_today` 清零**；NTP 同步后真实槽位又与刚写入的假值不同 → 再响一次。
+  副作用：**开机前已消耗的配额被抹掉 = 重启即可绕过每日限额**。
+- **修复**：新增 `CtrlState::clock_valid()`（< 2020-01-01 视为不可信）；时钟未同步时
+  `refresh_if_due()` 直接返回 false（不刷新 / 不清零 / 不响），等 NTP 校准后再比对真实槽位。
+- **验证**：重启后 `grep -c 蜂鸣 /tmp/webd.log` = **0**（修复前为 2）；
+  人为把 `last_quota_day` 置 1 再启 webd → 正常响一声、状态文件自动纠正回当前槽位（41454），
+  证明刷新蜂鸣功能未被改坏。单测 39 passed（新增 `clock_invalid_blocks_refresh`）。
