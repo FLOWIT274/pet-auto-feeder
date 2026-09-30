@@ -28,6 +28,7 @@ start_watch() {
 	(
 		no_cam=0
 		reset_done=0
+		cam_seen=0	# 本次开机是否见过摄像头: 区分"没接"与"接了又掉"
 		last_seq=""
 		stall_s=0
 		shm_miss_s=0
@@ -59,6 +60,7 @@ start_watch() {
 			if ls /dev/video[0-3] >/dev/null 2>&1; then
 				no_cam=0
 				reset_done=0
+				cam_seen=1
 				if [ ! -f "$PIDFILE" ] || ! kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
 					start_daemon
 				fi
@@ -101,8 +103,15 @@ start_watch() {
 					echo 4340000.usb > /sys/bus/platform/drivers/dwc2/bind 2>/dev/null
 					reset_done=1
 				elif [ "$no_cam" -ge 360 ] && [ "$reset_done" -eq 1 ]; then
-					echo "$(date) [watch] 摄像头缺失 ${no_cam}s 且软复位无效, 重启整机"
-					reboot
+					if [ "$cam_seen" -eq 1 ]; then
+						echo "$(date) [watch] 摄像头曾就绪但已缺失 ${no_cam}s 且软复位无效, 重启整机"
+						reboot
+					elif [ "$no_cam" -eq 360 ]; then
+						# 开机起从未见过摄像头 = 未接/未配置。
+						# 此时重启毫无意义(重启后依然没有), 只会导致每 6 分钟无限重启,
+						# 既让整机不可用, 又会在每次重启的上电窗口误触发蜂鸣器。
+						echo "$(date) [watch] 开机起从未检测到摄像头, 跳过整机重启 (请确认 OTG 摄像头是否接好)"
+					fi
 				fi
 			fi
 		done
