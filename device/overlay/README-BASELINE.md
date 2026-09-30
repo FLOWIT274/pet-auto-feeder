@@ -22,7 +22,8 @@
 | `mnt/system/usr/bin/webd` | 管理台二进制 | axum，绑 0.0.0.0:8080；源码 `vision-server/webd/`；**HTML 内嵌（include_str!）**，改页面必须重编译。⚠️ 必须放 `mnt/system/usr/bin/`——`S90webd` 调的是 `/mnt/system/usr/bin/webd`（`/mnt/system` 是 rootfs 上的普通目录，不是独立分区；放 `usr/bin/` 服务起不来） |
 | `mnt/system/usr/bin/ewelink-rs` | eWelink 控制 daemon | 源码 `ewelink/`；固件脉冲/全通道/云控/负缓存；token 文件 `/root/.ewelink-tokens.json`。⚠️ 同上，`S90ewelink` 调 `/mnt/system/usr/bin/ewelink-rs` |
 | `usr/bin/vdec_stream_v4l2` | 视觉推理二进制（基线副本） | 与 `/mnt/data/tpu/vdec_stream_v4l2` 同一产物；板上实际运行的是 data 分区那份（S96vision 指向） |
-| `usr/bin/buzzer_beep.sh` | 配额刷新蜂鸣脚本 | A19/GPIO499 **高电平触发**蜂鸣器模块（低=静音、高=响）；u-boot 起该脚即为 GPIO 输出低，webd 在配额刷新时调它拉高响 2 下 |
+| `usr/bin/buzzer_beep.sh` | 配额刷新蜂鸣脚本 | A19/GPIO499 **高电平触发**蜂鸣器模块（低=静音、高=响）；u-boot 起该脚即为 GPIO 输出低。节奏由 `/etc/buzzer.conf` 决定 |
+| `etc/buzzer.conf` | **蜂鸣器节奏配置** | `BUZZ_COUNT`/`BUZZ_ON`/`BUZZ_GAP`/`ACTIVE_HIGH`/`RESTORE_MUX`；改完**立即生效无需重启**；试听直接跑 `buzzer_beep.sh` |
 | `etc/webd.env` | webd 环境配置 | `WEB_CTRL_SOCKET_ID` 等；内容含部署环境值 |
 | `etc/ewelink.env` | eWelink 凭证 | ⚠️ 含用户账号凭证，打包固件注意脱敏/替换 |
 | `etc/ntp.conf` | NTP 服务器配置 | 配合 S49ntp |
@@ -55,7 +56,8 @@
 ## 功能速览（开机后）
 
 1. **管理台** `http://<ip>:8080`：视觉监控（常开、全屏）、自动喂食状态机（窗口 1.2s 狗均值>65% 且无猫 → 扣 1 配额 → 插座通电 + 邮件带实时照片；窗口/阈值为代码内固定常量）、配额（默认 1/日，可配多整点刷新）、配额用尽暂停推理、调试模式（干跑）、参数配置（配额/通电时长/刷新时刻，持久化）、插座管理、按键监视
-2. **配额刷新提醒**：webd 检测到配额刷新到点 → 调 `buzzer_beep.sh 2` 让蜂鸣器响两下（A19 高电平触发；平时低电平静音）
+2. **配额刷新提醒**：webd 检测到配额刷新到点 → 调 `buzzer_beep.sh`（不传次数，读 `/etc/buzzer.conf`）让蜂鸣器响几下（A19 高电平触发；平时低电平静音）。
+   节奏改 `/etc/buzzer.conf` 即可，例如 `BUZZ_COUNT=3 / BUZZ_ON=0.35 / BUZZ_GAP=0.30`；改完立即生效。
 3. **无线白名单**：只连 wifi.ssid；无凭证 → AP 热点 `licheervnano-XXXX`（密码 00000000）+ 80 端口配置页
 4. **长按 User Key 5s**：清空配网 → AP 配置模式
 5. 空闲时 USB RNDIS `10.86.142.1:8080` 兜底访问；安卓 APP（UDP 37777 发现）点击直达管理页

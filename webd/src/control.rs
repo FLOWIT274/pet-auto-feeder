@@ -397,8 +397,10 @@ pub async fn run(
     }
 }
 
-/// 配额刷新提醒：调用 buzzer_beep.sh 连续响两下
+/// 配额刷新提醒：调用 buzzer_beep.sh
 /// （A19/GPIO499 接**高电平触发**模块：高=响，低=静音）
+/// 不传次数 —— 由 /etc/buzzer.conf 的 BUZZ_COUNT / BUZZ_ON / BUZZ_GAP 决定节奏，
+/// 这样用户改配置文件即可调整，无需改代码或重编 webd。
 async fn beep_quota_refresh() {
     let bin = Path::new("/usr/bin/buzzer_beep.sh");
     if !bin.exists() {
@@ -407,7 +409,7 @@ async fn beep_quota_refresh() {
     }
     match tokio::time::timeout(
         Duration::from_secs(5),
-        tokio::process::Command::new(bin).arg("2").output(),
+        tokio::process::Command::new(bin).output(),
     )
     .await
     {

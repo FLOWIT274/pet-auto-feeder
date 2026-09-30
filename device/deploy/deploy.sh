@@ -33,7 +33,7 @@ $SSH "free | head -2; cat /proc/loadavg; dmesg | tail -2" 2>/dev/null || true
 FILES="etc/init.d/S20buzzer etc/init.d/S30wifi etc/init.d/S49ntp etc/init.d/S90ewelink etc/init.d/S90webd \
        etc/init.d/S96vision etc/init.d/S97logpersist etc/init.d/S97wifidisc etc/init.d/S98wifiguard etc/init.d/S99keywipe \
        usr/bin/key-wipe.py usr/bin/wifidisc.py usr/bin/buzzer_beep.sh usr/bin/crashlog.sh \
-       etc/ntp.conf etc/webd.env etc/ewelink.env \
+       etc/buzzer.conf etc/ntp.conf etc/webd.env etc/ewelink.env \
        boot/wifi.ssid boot/wifi.pass"
 
 # 取回板上 md5；内容相同的跳过（避免反复写大文件进 SD）

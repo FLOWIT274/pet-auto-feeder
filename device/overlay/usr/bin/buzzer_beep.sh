@@ -9,9 +9,12 @@
 #   开机状态：u-boot 已改为把该脚设成 **XGPIOA_19 输出低电平（静音）**
 #     （见 patches/01 的 cvi_board_init.c；原厂是 UART1_RTS，会让高触发模块长响）。
 #
-# 用法: buzzer_beep.sh [次数]          默认 2 下
+# 用法: buzzer_beep.sh [次数]          不传次数则用 /etc/buzzer.conf 的 BUZZ_COUNT
+#       BUZZ_ON=0.5 buzzer_beep.sh    临时覆盖节奏(环境变量优先于配置文件)
 #       RESTORE_MUX=1 buzzer_beep.sh 2 响完把 pinmux 还原成 UART1_RTS（默认 0，见下）
 #       ACTIVE_HIGH=0 buzzer_beep.sh 2 若模块实为低电平触发，用它翻转极性
+# 配置: /etc/buzzer.conf (BUZZ_COUNT / BUZZ_ON / BUZZ_GAP / ACTIVE_HIGH / RESTORE_MUX)
+#       改完立即生效，无需重启；试听直接跑本脚本即可，不必等配额刷新
 # 依赖: devmem(切 pinmux), sysfs gpio
 #
 # ⚠️ 为什么默认 RESTORE_MUX=0（响完保持 GPIO 输出低，不还原成 UART1_RTS）：
@@ -20,25 +23,38 @@
 #   即使模块是低触发，保持 GPIO 输出也能给出确定的静音电平。
 #   代价：该 pad 长期占为 GPIO（不再作 JTAG TMS / UART1 RTS）。
 #
-# ⚠️ 极性：现场口述曾出现"低触发/高触发"两种说法（2026-09-30）。实测依据：
-#   板子原厂 A19=UART1_RTS 且 MCR=0（引脚为高）时，若模块为高触发会持续响。
-#   现按**高电平触发**实现（ACTIVE_HIGH=1）。若实测发现"该响时不响、平时反而响"，
-#   设 ACTIVE_HIGH=0 即可翻转，无需改代码。
+# ⚠️ 极性：2026-09-30 接上模块后实测闭环 —— 低电平安静、高电平响，
+#   确认**高电平触发**（ACTIVE_HIGH=1）。若换用低触发模块，设 0 即可，无需改代码。
+
+CONF=/etc/buzzer.conf
+
+# 1) 先记住显式传入的环境变量（优先级最高，用于临时覆盖试听）
+_env_ACTIVE_HIGH=${ACTIVE_HIGH:-}
+_env_RESTORE_MUX=${RESTORE_MUX:-}
+_env_BUZZ_COUNT=${BUZZ_COUNT:-}
+_env_BUZZ_ON=${BUZZ_ON:-}
+_env_BUZZ_GAP=${BUZZ_GAP:-}
+
+# 2) 读配置文件（普通赋值，不 source，避免配置文件写坏时影响脚本控制流）
+[ -r "$CONF" ] && . "$CONF"
+
+# 3) 合并: 显式环境变量 > 配置文件 > 内置默认
+ACTIVE_HIGH=${_env_ACTIVE_HIGH:-${ACTIVE_HIGH:-1}}
+RESTORE_MUX=${_env_RESTORE_MUX:-${RESTORE_MUX:-0}}
+BUZZ_COUNT=${_env_BUZZ_COUNT:-${BUZZ_COUNT:-2}}
+ON=${_env_BUZZ_ON:-${BUZZ_ON:-0.15}}	# 单次响时长(秒)
+GAP=${_env_BUZZ_GAP:-${BUZZ_GAP:-0.25}}	# 两次之间间隔(秒)
 
 GPIO=499
 PINMUX_REG=0x03001064
 MUX_GPIO=0x03	# XGPIOA_19
 MUX_BOOT=0x04	# UART1_RTS = 原厂 u-boot 默认复用
-RESTORE_MUX=${RESTORE_MUX:-0}
-ACTIVE_HIGH=${ACTIVE_HIGH:-1}
-BEEP=${1:-2}
+BEEP=${1:-$BUZZ_COUNT}
 if [ "$ACTIVE_HIGH" = "1" ]; then
 	IDLE=0; ACTIVE=1	# 高触发模块: 低=静音, 高=鸣叫
 else
 	IDLE=1; ACTIVE=0	# 低触发模块: 高=静音, 低=鸣叫
 fi
-ON=0.15		# 单次响时长(秒)
-GAP=0.25	# 两次之间间隔(秒)
 
 set_out() { echo "$1" > "/sys/class/gpio/gpio$GPIO/value" 2>/dev/null; }
 

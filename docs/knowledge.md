@@ -281,6 +281,13 @@ $HOME/toolchains/riscv64-linux-musl-x86_64/bin/riscv64-unknown-linux-musl-g++ -O
 - **脚本**：`/usr/bin/buzzer_beep.sh [次数]`（overlay 固化，**755**）——
   pinmux 写 `0x03001064=0x3` → export 499 → `direction=low`（静音）→
   循环：拉高 0.15s（响）→ 回低 → 间隔 0.25s。2 下 = 0.55s（实测 0.561s）。
+  - **节奏可配置**（2026-09-30 新增）：读 `/etc/buzzer.conf` ——
+    `BUZZ_COUNT`（几下）/ `BUZZ_ON`（每下时长）/ `BUZZ_GAP`（间隔）/ `ACTIVE_HIGH`（极性）/ `RESTORE_MUX`。
+    改完**立即生效、无需重启**。优先级：**命令行次数 > 显式环境变量 > 配置文件 > 内置默认**。
+    webd 调用时**不传次数**（此前硬传 `"2"`，会盖掉配置），因此配置对它同样有效。
+    试听：`/usr/bin/buzzer_beep.sh`（按配置响）或 `/usr/bin/buzzer_beep.sh 5`（临时 5 下）。
+    真机实测：把配置改成 3 下/0.35s/间隔 0.30s，未重启任何服务即生效
+    （寄存器实测脉冲 0.354/0.345/0.356s，间隔 ≈0.30s）。
   - **`buzzer_beep.sh 0`** = 只切 pinmux + 输出低，完全不响（S20buzzer 用的就是这个）。
   - **`RESTORE_MUX` 默认 0**：响完**保持 GPIO 输出低**，**不**还原成 UART1_RTS
     （还原会让高触发模块长响）。代价是该 pad 不再作 JTAG TMS / UART1_RTS。
