@@ -133,11 +133,25 @@ stop() {
 	mkdir -p "$DIR"
 	# 记录"上次是怎么停的"：rcK（关机流程）→ shutdown；其它（手动/部署）→ manual。
 	# 只在关机路径写 shutdown，避免手动 stop 被误判成"正常关机"而掩盖真正的死机。
-	ppid_cmd=$(tr '\0' ' ' < "/proc/$PPID/cmdline" 2>/dev/null)
-	case "$ppid_cmd" in
-		*rcK*) echo "shutdown $(date '+%Y-%m-%d %H:%M:%S')" > "$DIR/.last-stop" ;;
-		*)     echo "manual $(date '+%Y-%m-%d %H:%M:%S')" > "$DIR/.last-stop" ;;
-	esac
+	#
+	# 注意：crashlog.sh 一般由 /etc/init.d/S97logpersist 调起，调用链是
+	#   rcK → S97logpersist → crashlog.sh
+	# 所以 $PPID 是 S97logpersist 而**不是** rcK。早先只查 $PPID，导致 reboot/关机
+	# 一律被误记成 manual（2026-09-30 排查无限重启时因此误判为"有人在手动重启"）。
+	# 这里沿 /proc/<pid>/stat 的 ppid 字段向上回溯若干层再判定。
+	kind=manual
+	pid=$PPID
+	i=0
+	while [ "$i" -lt 6 ]; do
+		case "$pid" in ''|*[!0-9]*) break ;; esac
+		[ "$pid" -le 1 ] && break
+		cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+		case "$cmd" in *rcK*) kind=shutdown; break ;; esac
+		# comm 字段在括号内且可能含空格, 故先剥掉到最后一个 ')' 再取 state 后的 ppid
+		pid=$(sed 's/^[^)]*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f2)
+		i=$((i + 1))
+	done
+	echo "$kind $(date '+%Y-%m-%d %H:%M:%S')" > "$DIR/.last-stop"
 }
 
 status() {
