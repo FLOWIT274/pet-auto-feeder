@@ -8,6 +8,7 @@
 
 | 路径（相对 rootfs） | 内容 | 说明 |
 |---|---|---|
+| `etc/init.d/S20buzzer` | 蜂鸣器上电静音 | 启动早期调 `buzzer_beep.sh 0`，把 A19/GPIO499 停在低电平（高触发模块的静音态）。u-boot 已直接置低，本脚本是二次保险（防 u-boot 改动未生效时长响） |
 | `etc/init.d/S30wifi` | WiFi 启动脚本 | **白名单修改版**（相对出厂版）：只连 `/boot/wifi.ssid` 指定网络；忽略 `/boot/wpa_supplicant.conf` 整体配置；生成配置强制 `update_config=0` + 单 network + 无明文口令 |
 | `etc/init.d/S49ntp` | NTP 校时 | 读 `/etc/ntp.conf`；开机对齐系统时间（配额按整点刷新，时间准确是前提） |
 | `etc/init.d/S90ewelink` | eWelink 控制 daemon 自启 | 依赖 S30wifi；读 `/etc/ewelink.env` 凭证；socket 就绪探测 |
@@ -21,7 +22,7 @@
 | `mnt/system/usr/bin/webd` | 管理台二进制 | axum，绑 0.0.0.0:8080；源码 `vision-server/webd/`；**HTML 内嵌（include_str!）**，改页面必须重编译。⚠️ 必须放 `mnt/system/usr/bin/`——`S90webd` 调的是 `/mnt/system/usr/bin/webd`（`/mnt/system` 是 rootfs 上的普通目录，不是独立分区；放 `usr/bin/` 服务起不来） |
 | `mnt/system/usr/bin/ewelink-rs` | eWelink 控制 daemon | 源码 `ewelink/`；固件脉冲/全通道/云控/负缓存；token 文件 `/root/.ewelink-tokens.json`。⚠️ 同上，`S90ewelink` 调 `/mnt/system/usr/bin/ewelink-rs` |
 | `usr/bin/vdec_stream_v4l2` | 视觉推理二进制（基线副本） | 与 `/mnt/data/tpu/vdec_stream_v4l2` 同一产物；板上实际运行的是 data 分区那份（S96vision 指向） |
-| `usr/bin/buzzer_beep.sh` | 配额刷新蜂鸣脚本 | A19/GPIO499 低电平触发蜂鸣器模块；用完把 pinmux 还原为 UART1_RTS（`0x03001064`），webd 在配额刷新时调它响 2 下 |
+| `usr/bin/buzzer_beep.sh` | 配额刷新蜂鸣脚本 | A19/GPIO499 **高电平触发**蜂鸣器模块（低=静音、高=响）；u-boot 起该脚即为 GPIO 输出低，webd 在配额刷新时调它拉高响 2 下 |
 | `etc/webd.env` | webd 环境配置 | `WEB_CTRL_SOCKET_ID` 等；内容含部署环境值 |
 | `etc/ewelink.env` | eWelink 凭证 | ⚠️ 含用户账号凭证，打包固件注意脱敏/替换 |
 | `etc/ntp.conf` | NTP 服务器配置 | 配合 S49ntp |
@@ -54,7 +55,7 @@
 ## 功能速览（开机后）
 
 1. **管理台** `http://<ip>:8080`：视觉监控（常开、全屏）、自动喂食状态机（窗口 1.2s 狗均值>65% 且无猫 → 扣 1 配额 → 插座通电 + 邮件带实时照片；窗口/阈值为代码内固定常量）、配额（默认 1/日，可配多整点刷新）、配额用尽暂停推理、调试模式（干跑）、参数配置（配额/通电时长/刷新时刻，持久化）、插座管理、按键监视
-2. **配额刷新提醒**：webd 检测到配额刷新到点 → 调 `buzzer_beep.sh 2` 让蜂鸣器响两下（A19 低电平触发）
+2. **配额刷新提醒**：webd 检测到配额刷新到点 → 调 `buzzer_beep.sh 2` 让蜂鸣器响两下（A19 高电平触发；平时低电平静音）
 3. **无线白名单**：只连 wifi.ssid；无凭证 → AP 热点 `licheervnano-XXXX`（密码 00000000）+ 80 端口配置页
 4. **长按 User Key 5s**：清空配网 → AP 配置模式
 5. 空闲时 USB RNDIS `10.86.142.1:8080` 兜底访问；安卓 APP（UDP 37777 发现）点击直达管理页

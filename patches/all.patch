@@ -13,10 +13,29 @@ index 411a81587..6423b78b6 100644
  
  / {
 diff --git a/build/boards/sg200x/sg2002_licheervnano_sd/u-boot/cvi_board_init.c b/build/boards/sg200x/sg2002_licheervnano_sd/u-boot/cvi_board_init.c
-index bfd3ba9b7..7869b123b 100644
+index bfd3ba9b7..291dda646 100644
 --- a/build/boards/sg200x/sg2002_licheervnano_sd/u-boot/cvi_board_init.c
 +++ b/build/boards/sg200x/sg2002_licheervnano_sd/u-boot/cvi_board_init.c
-@@ -124,9 +124,18 @@ int cvi_board_init(void)
+@@ -100,7 +100,17 @@ int cvi_board_init(void)
+         mmio_write_32(0x03001070, 0x1); // GPIOA 28 UART1 TX
+         mmio_write_32(0x03001074, 0x1); // GPIOA 29 UART1 RX
+         mmio_write_32(0x03001068, 0x4); // GPIOA 18 UART1 CTS
+-        mmio_write_32(0x03001064, 0x4); // GPIOA 19 UART1 RTS
++        // GPIOA 19 = 蜂鸣器触发脚（高电平触发模块；高=响，低=静音）。
++        // 原厂此处配成 UART1_RTS(0x4)：UART 复位态下该 pad 可能被驱动为高，
++        // 会让蜂鸣器从开机起持续长响。本项目不用 UART1（BT 走 SDIO），
++        // 故在最早的软件可控点(u-boot)就把它切成 GPIO 输出并置低=静音。
++        mmio_write_32(0x03001064, 0x3); // GPIOA 19 GPIO_MODE
++        val = mmio_read_32(0x03020000); // GPIOA 电平
++        val &= ~(1 << 19);              // A19 = 0 (静音)
++        mmio_write_32(0x03020000, val);
++        val = mmio_read_32(0x03020004); // GPIOA 方向
++        val |= (1 << 19);               // A19 = output
++        mmio_write_32(0x03020004, val);
+ 
+         // PWM
+         //mmio_write_32(0x03001068, 0x2); // GPIOA 18 PWM 6
+@@ -124,9 +134,18 @@ int cvi_board_init(void)
  	//mmio_write_32(0x030010ac, 0x4); // PWRGPIO 2 PWM 10
  	mmio_write_32(0x030010ac, 0x0); // PWRGPIO 2 GPIO_MODE
  
@@ -36,6 +55,22 @@ index bfd3ba9b7..7869b123b 100644
  
  	// spi1 on mipi csi 
  	/*
+diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S00kmod b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S00kmod
+index 4c5ff6840..8e1314c6e 100755
+--- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S00kmod
++++ b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S00kmod
+@@ -19,6 +19,11 @@ then
+ 	insmod soph_rgn.ko
+ 	insmod soph_tpu.ko
+ 	insmod soph_vcodec.ko
++	# vc_shim 必须早于 soph_jpeg / soph_vc_driver 加载：
++	# 它补上新版 JPU/VC 驱动所需的旧 soph_vcodec 缺失导出
++	# （vcodec_lock/trylock/unlock/is_locked、vpu_set_common_memory）。
++	# 缺失会导致 JPU 硬解通道起不来（/dev/cvi_vc_enc0 不可用）。
++	insmod vc_shim.ko
+ 	insmod soph_jpeg.ko
+ 	insmod soph_vc_driver.ko MaxVencChnNum=9 MaxVdecChnNum=9
+ 	insmod soph_ive.ko
 diff --git a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S25wifimod b/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S25wifimod
 index b287dd4a0..ecc164906 100755
 --- a/buildroot/board/cvitek/SG200X/overlay/etc/init.d/S25wifimod

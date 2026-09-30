@@ -13,7 +13,7 @@ cd LicheeRV-Nano-Build
 git apply /path/to/pet-auto-feeder/patches/all.patch
 
 # 方式二：按主题分别应用
-git apply /path/to/pet-auto-feeder/patches/01-ov5647-camera-support.patch
+git apply /path/to/pet-auto-feeder/patches/01-board-bringup.patch
 git apply /path/to/pet-auto-feeder/patches/02-wifi-whitelist.patch
 git apply /path/to/pet-auto-feeder/patches/03-dmesg-noise-silence.patch
 ```
@@ -22,8 +22,12 @@ git apply /path/to/pet-auto-feeder/patches/03-dmesg-noise-silence.patch
 
 ## 三个补丁的内容
 
-### 01-ov5647-camera-support.patch（16 个文件）
-让基线支持 **OV5647（树莓派 Camera V1）** MIPI 摄像头，并保证不烧毁板子：
+### 01-board-bringup.patch（16 个文件）
+板级 bring-up：OV5647 MIPI 摄像头支持 + 蜂鸣器引脚安全化。
+
+**蜂鸣器（A19/GPIOA 19）**：原厂把该脚配成 `UART1_RTS`。本项目蜂鸣器是**高电平触发**模块，
+而 UART 复位态下 RTS 去断言会使该 pad 为**高** → 开机起持续长响。本项目不用 UART1
+（BT 走 SDIO），故改为 `XGPIOA_19` 输出**低**（静音），从最早的可控点消除长响。
 
 - `u-boot/cvi_board_init.c`：**关键安全改动**。`MIPIRX0N` 原本被配成 `CAM_MCLK1` 输出时钟，
   而本项目 bring-up 时该 pad 由外部 3.3V 供电（给 OV5647 供电）——输出时钟会直接短路电源轨、烧毁 SD 卡与主板。

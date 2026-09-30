@@ -99,7 +99,7 @@ cp device/overlay/boot/wifi.pass.example  device/overlay/boot/wifi.pass
 - **全板端自包含**：摄像头经 OTG 直连板端，无宿主机推流依赖；`S96vision` 开机自启并看护视觉进程、摄像头掉线自愈（DWC2 软复位→reboot 兜底）、webd 保活。
 - **零 SD 写入热路径**：采集/解码/推理/日志全程在内存（tmpfs + 共享内存），SD 卡只有低频持久化。
 - **崩溃现场保留**：`device/overlay/usr/bin/crashlog.sh` 把易失日志镜像到 SD，并记录"上次是否正常关机"，用于排查整机假死。
-- **配额刷新鲜蜂鸣提醒**：A19 = GPIO499 低电平触发蜂鸣器模块，用完立即把 pinmux 还原为 UART1_RTS，不长期占用该 pad。
+- **配额刷新蜂鸣提醒**：A19 = GPIO499 接**高电平触发**蜂鸣器模块（低=静音）；u-boot 开机就把该脚置为 GPIO 输出低（避免 UART1_RTS 态下长响），webd 在配额刷新时拉高响两下。
 
 更多细节见 `docs/knowledge.md`（知识库，含大量踩坑记录）与 `docs/PROJECT_STATUS.md`（当前状态与待办）。
 

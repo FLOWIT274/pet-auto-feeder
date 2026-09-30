@@ -30,7 +30,7 @@ echo "== 部署前状态 =="
 $SSH "free | head -2; cat /proc/loadavg; dmesg | tail -2" 2>/dev/null || true
 
 # 2) rootfs 脚本与配置（只推仓库里存在的：凭证文件属于本地私有，缺失就跳过）
-FILES="etc/init.d/S30wifi etc/init.d/S49ntp etc/init.d/S90ewelink etc/init.d/S90webd \
+FILES="etc/init.d/S20buzzer etc/init.d/S30wifi etc/init.d/S49ntp etc/init.d/S90ewelink etc/init.d/S90webd \
        etc/init.d/S96vision etc/init.d/S97logpersist etc/init.d/S97wifidisc etc/init.d/S98wifiguard etc/init.d/S99keywipe \
        usr/bin/key-wipe.py usr/bin/wifidisc.py usr/bin/buzzer_beep.sh usr/bin/crashlog.sh \
        etc/ntp.conf etc/webd.env etc/ewelink.env \
@@ -57,7 +57,7 @@ for f in $FILES; do
 done
 # 脚本类必须可执行
 $SSH "chmod 755 /usr/bin/key-wipe.py /usr/bin/wifidisc.py /usr/bin/buzzer_beep.sh /usr/bin/crashlog.sh \
-      /etc/init.d/S30wifi /etc/init.d/S49ntp /etc/init.d/S90ewelink /etc/init.d/S90webd \
+      /etc/init.d/S20buzzer /etc/init.d/S30wifi /etc/init.d/S49ntp /etc/init.d/S90ewelink /etc/init.d/S90webd \
       /etc/init.d/S96vision /etc/init.d/S97logpersist /etc/init.d/S97wifidisc /etc/init.d/S98wifiguard /etc/init.d/S99keywipe 2>/dev/null; sync"
 
 # 3) 二进制。注意必须落在 /mnt/system/usr/bin/：S90webd / S90ewelink 按该路径调用
@@ -93,6 +93,7 @@ fi
 # 5) 启动服务并自检
 $SSH "
   rm -f /root/.ewelink-rs-daemon.sock
+  /etc/init.d/S20buzzer start
   /etc/init.d/S90ewelink start
   /etc/init.d/S90webd start
   /etc/init.d/S98wifiguard start

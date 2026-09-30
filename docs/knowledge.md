@@ -259,15 +259,36 @@ $HOME/toolchains/riscv64-linux-musl-x86_64/bin/riscv64-unknown-linux-musl-g++ -O
 - **用法**：`/etc/init.d/S97logpersist start|stop|status`；死机复位后先看 `/mnt/data/log/messages.log` 的横幅与尾部、再看 `status.log` 的内存/swap 走势。
 - 写入量：状态行 ~150B/分钟，messages 仅在有新 syslog 行时追加（dmesg 噪声已清理）。
 
-## 配额刷新蜂鸣提醒（2026-08-25 新增，2026-08-26 复核引脚）
-- **硬件**：低电平触发的蜂鸣器**模块**（自带驱动电路），GPIO 仅作触发信号、不驱动负载 → 无拉电流问题。
+## 配额刷新蜂鸣提醒（2026-08-25 新增；2026-09-30 修正为高电平触发）
+- **硬件**：**高电平触发**的蜂鸣器**模块**（自带驱动电路），GPIO 仅作触发信号、不驱动负载 → 无拉电流问题。
+  **静音(idle) = 低电平；鸣叫(active) = 高电平**。
+  ⚠️ 早期文档误记为"低电平触发"，导致脚本极性写反（平时高、响时间歇拉低）——已修正。
 - **引脚（源码级核对）**：**A19 = GPIOA19 = pad `JTAG_CPU_TMS` = Linux GPIO 499**（bank A 基址 480 = `ARCH_NR_GPIOS` 512 − 32，+19）。
   - FMUX 寄存器 **`0x03001064`**（3bit 字段 offset 0 / mask 0x7；**该寄存器仅此脚使用**，可整字写入）；
     功能值：`0=JTAG_CPU_TMS 1=CAM_MCLK0 2=PWM_7 3=XGPIOA_19 4=UART1_RTS 5=AUX0 6=UART1_TX 7=VO_D_28`
     （见 `freertos/cvitek/hal/cv181x/config/cv181x_pinlist_swconfig.h` + `cv181x_reg_fmux_gpio.h`）。
-  - u-boot 开机把它置为 `0x4`=UART1_RTS（`build/boards/sg200x/sg2002_licheervnano_sd/u-boot/cvi_board_init.c:103`，注释 "GPIOA 19 UART1 RTS"）。
-- **复用冲突结论（已解）**：`&uart1 status="okay"`，但固件只加载 WiFi 驱动（S25wifimod: aic8800_bsp/fdrv + 8733bs），**无任何 BT bring-up（无 hciattach/BT 服务）→ RTS 无人驱动**；JTAG TMS 本身已被 u-boot 放弃（开机即写 0x4）。故该 pad 可安全借用。
-- **脚本**：`/usr/bin/buzzer_beep.sh [次数]`（overlay 已固化，**权限 755**）——pinmux 写 `0x03001064=0x3` → export 499 → direction out → 默认高（关）→ 循环：拉低 0.15s（响）→ 拉高 → 间隔 0.25s；**结束或被 kill 时 `trap` 还原 `0x4`（UART1_RTS），只借用 ~0.5s、不长期占用该 pad**（`RESTORE=0` 可保持 GPIO 复用，调试用）。
-- **集成**：webd `control.rs` 的 `refresh_if_due()` 返回 `bool`；`run()` 轮询（100ms）检测到配额槽变化时 `tokio::spawn` 调 `buzzer_beep.sh 2`（异步不阻塞，5s 超时）；**无 HTTP/UI 手动触发入口**，手动测试直接 SSH 跑脚本。
-- **验证**：强制改 `last_quota_day=999999` 后重启 webd → 日志 `配额刷新蜂鸣完成 exit=0`，GPIO499 采样出现两次低电平脉冲。
-- **部署**：已加入 `deploy/deploy_overlay.sh` 拷贝清单 + `chmod 755`（此前仅存在于 overlay 且权限 600 → 打包/部署后不可执行，webd 只会打一行"蜂鸣失败"）。
+  - 原厂 u-boot 把它置为 `0x4`=UART1_RTS（`cvi_board_init.c:103`）。**对高触发蜂鸣器这是危险的**：
+    UART MCR 复位值=0 → RTS 去断言 → 16550 的 RTS# 为高 → pad 高 → **开机即持续长响**。
+- **开机处理（u-boot 层，补丁 01）**：u-boot 直接把该脚设为 `XGPIOA_19`(0x3) 输出低（静音），
+  不再用 UART1_RTS。本项目不用 UART1（BT 走 **SDIO**：`aic_btsdio.c`；inittab 无 ttyS1 getty），
+  所以放弃该 pad 无代价。这样从最早的可控点就保证静音，不依赖任何用户态脚本。
+  - 另有 `S20buzzer`（`/etc/init.d/`）在启动早期调 `buzzer_beep.sh 0` 再确认一次 GPIO 低——
+    防止 OTA/换固件等场景下 u-boot 改动未生效时长响。
+- **Linux sysfs 陷阱**：Linux 5.10 的 `gpiolib-sysfs.c` 中 **`"out"` 等价于 `"low"`**
+  （`else if (streq(buf,"out") || streq(buf,"low")) direction_output_raw(desc,0)`）。
+  所以写 `echo out > direction` 会**先把脚拉低**；对高触发模块这无害（本来就是静音电平），
+  但对低触发模块会造成"多响一下"的毛刺。脚本统一用 `echo low > direction` 显式表达意图。
+- **脚本**：`/usr/bin/buzzer_beep.sh [次数]`（overlay 固化，**755**）——
+  pinmux 写 `0x03001064=0x3` → export 499 → `direction=low`（静音）→
+  循环：拉高 0.15s（响）→ 回低 → 间隔 0.25s。2 下 = 0.55s（实测 0.561s）。
+  - **`buzzer_beep.sh 0`** = 只切 pinmux + 输出低，完全不响（S20buzzer 用的就是这个）。
+  - **`RESTORE_MUX` 默认 0**：响完**保持 GPIO 输出低**，**不**还原成 UART1_RTS
+    （还原会让高触发模块长响）。代价是该 pad 不再作 JTAG TMS / UART1_RTS。
+  - `devmem` 在 `/usr/sbin`，init 脚本 PATH 未必含它 → 脚本用绝对路径回退。
+  - `trap INT TERM HUP` → 先回静音低电平（webd 5s 超时会 kill 它），实测中断后末态为低。
+- **集成**：webd `control.rs` 的 `refresh_if_due()` 返回 `bool`；`run()` 轮询（100ms）检测到配额槽变化时
+  `tokio::spawn` 调 `buzzer_beep.sh 2`（异步不阻塞，5s 超时）；**无 HTTP/UI 手动触发入口**，手动测试直接 SSH 跑脚本。
+- **验证**：桩测试确认调用序列为 `0x3 → 低 → 高 → 低 → 高 → 低`（正好 2 个高脉冲），
+  中断路径末态为低，计时 2 下=0.561s / 3 下=0.965s。
+  **未做真机听感验证**（改动时板子失联）——恢复后应实测确认"只响两下、平时无声"。
+- **部署**：已加入 `deploy/deploy.sh` 拷贝清单 + `chmod 755`。

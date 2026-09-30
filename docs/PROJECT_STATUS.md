@@ -37,7 +37,7 @@ UVC 摄像头 (OTG host) /dev/video0, MJPEG 640x480
 | S98wifiguard（白名单守卫） | ✅ | 10s 四重校验 |
 | S99keywipe（按键清配网） | ✅ | 长按 5s → AP 模式 |
 | S97wifidisc（发现广播） | ✅ | UDP 37777 供安卓 APP |
-| buzzer_beep.sh（配额刷新提醒） | ✅ | A19/GPIO499 低电平触发蜂鸣器模块；用完还原 pinmux（0x4=UART1_RTS）；webd 配额刷新时响 2 下（真机验证 2026-09-09） |
+| buzzer_beep.sh（配额刷新提醒） | ✅ | A19/GPIO499 **高电平触发**蜂鸣器模块（低=静音）；u-boot 开机即置该脚为 GPIO 输出低，webd 配额刷新时拉高响 2 下 |
 | S97logpersist + crashlog.sh（崩溃日志） | ✅ 运行中 | 把 tmpfs 日志镜像到 `/mnt/data/log/`（messages.log + status.log，各 1MB 封顶），启动横幅判定上次是否正常关机 |
 | host super_stream.sh | ⏸ 退役 | 不再使用（曾因 pidof 误匹配导致 VPU 冲突卡死） |
 

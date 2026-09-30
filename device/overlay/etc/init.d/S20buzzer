@@ -1,0 +1,33 @@
+#!/bin/sh
+# S20buzzer — 开机把蜂鸣器引脚停在"静音"电平
+#
+# 背景：蜂鸣器是**高电平触发**模块（高=响，低=静音）。触发脚 A19 由 u-boot 配成
+#   UART1_RTS(0x4)，而本项目不用 UART1；UART 复位态下该 pad 可能被驱动为高，
+#   会让蜂鸣器**从开机起持续长响**。
+#   因此必须在启动早期就把该脚切回 GPIO 并输出低电平（静音），
+#   不能等 webd 首次配额刷新时才由 buzzer_beep.sh 处理（那可能是几小时后）。
+#
+# 实现：调 buzzer_beep.sh 0 —— 0 次鸣叫，只做"切 pinmux + 输出静音电平 + 收尾保持低"。
+# 依赖：/sys 已挂载（inittab sysinit 的 mount -a 早于 rcS）。devmem 在 /usr/sbin。
+# 重跑：/etc/init.d/S20buzzer start
+
+SCRIPT=/usr/bin/buzzer_beep.sh
+
+case "$1" in
+	start)
+		if [ -x "$SCRIPT" ]; then
+			"$SCRIPT" 0
+			# 记录"上电→静音"耗时：从上电到本脚本执行期间 A19 是高电平，
+			# 高触发蜂鸣器会响。uptime 可量化这段窗口（u-boot 时间另加 ~1-2s）。
+			UPTIME=$(cut -d' ' -f1 /proc/uptime 2>/dev/null)
+			MUX=$(/usr/sbin/devmem 0x03001064 32 2>/dev/null)
+			[ -d /mnt/data/log ] && echo "$(date '+%F %T') uptime=${UPTIME}s mux=$MUX -> 已静音" \
+				>> /mnt/data/log/buzzer-boot.log 2>/dev/null
+			echo "buzzer: 已停在静音电平 (A19/GPIO499 = 低, uptime=${UPTIME}s)"
+		else
+			echo "buzzer: $SCRIPT 不存在，跳过"
+		fi
+		;;
+	stop)	: ;;
+	*)	echo "用法: $0 start"; exit 1 ;;
+esac
